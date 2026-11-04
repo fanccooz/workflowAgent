@@ -50,7 +50,9 @@ npm install
 npx nest start
 ```
 
-扩展「设置」里填写：后端 `http://localhost:3000`、Token、华荣工号。详见 `server/README.md` 与 `docs/superpowers/specs/2026-11-02-habit-chat-suggestion-design.md`。
+扩展「设置」里填写：后端 `http://localhost:3000`、Token、工号。详见 `server/README.md` 与 `docs/superpowers/specs/2026-11-02-habit-chat-suggestion-design.md`。
+
+启用后端后，助手会：**DeepSeek 拆步 → 写入 SQLite → 逐步执行 → 失败再问 DeepSeek 补救**。
 
 ## 请假 / 填表 Agent（第一期）
 

@@ -76,14 +76,17 @@ const DeepSeek = (function () {
 
   function buildChatMessages(utterance, history) {
     const system = [
-      '你是华荣照明信息平台里的对话助手，用中文简短自然地回复。',
+      '你是目标信息平台里的对话助手，用中文简短自然地回复。',
       '每一轮你既要对话，也要判断要不要让前端去操作系统页面。',
+      '用户一句话里若有多个要求，必须拆成多个步骤，按执行顺序全部放入 actions，不要只返回第一步。',
       '只输出一个 JSON 对象，不要 Markdown，不要解释。格式：',
-      '{"reply":"给用户看的话","action":{"type":"none|leave.open_fill|open_workflow|open_menu|open_todo","query":"给本地匹配用的短句"}}',
-      '规则：闲聊、询问、信息不全 → type=none，在 reply 里说明或追问。',
+      '{"reply":"给用户看的话","actions":[{"type":"none|leave.open_fill|open_workflow|open_menu|open_todo|filter_list","query":"短句"}]}',
+      '规则：闲聊、询问、信息不全 → actions 里一项 type=none，在 reply 里说明或追问。',
       '用户要请假或发起并填写表单（含日期/事由等）→ leave.open_fill，query 建议「打开请假」。',
       '用户只要打开某流程、不填表 → open_workflow，query 如「打开请假」或「打开出差」。',
-      '用户要进菜单/页面 → open_menu；要待办 → open_todo。',
+      '用户要进菜单/页面 → open_menu；要待办列表 → open_todo。',
+      '用户要在任意列表/查询页按关键字筛选、过滤、搜索 → filter_list，query 只写关键字；先导航再筛选。',
+      '示例：「待办里筛通用流程」→ open_todo + filter_list；「打开流程定义搜索请假」→ open_menu + filter_list。',
       'query 要短；具体填哪些框由后续按页面字段再推理，不要把长段说明塞进 query。',
     ].join('');
 

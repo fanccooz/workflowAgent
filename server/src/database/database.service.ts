@@ -20,6 +20,31 @@ export interface SuggestionCacheRow {
   based_on_event_id: number | null;
 }
 
+export type TaskRunStatus = 'planned' | 'running' | 'done' | 'failed' | 'cancelled';
+export type TaskStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+
+export interface TaskRunRow {
+  id: number;
+  warom_user_id: string;
+  utterance: string;
+  reply: string;
+  status: TaskRunStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskStepRow {
+  id: number;
+  run_id: number;
+  seq: number;
+  type: string;
+  query: string;
+  status: TaskStepStatus;
+  result_message: string;
+  created_at: string;
+  updated_at: string;
+}
+
 @Injectable()
 export class DatabaseService implements OnModuleInit {
   private db!: DatabaseSync;
@@ -44,6 +69,31 @@ export class DatabaseService implements OnModuleInit {
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         based_on_event_id INTEGER
       );
+      CREATE TABLE IF NOT EXISTS task_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        warom_user_id TEXT NOT NULL,
+        utterance TEXT NOT NULL,
+        reply TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'planned',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_runs_user_created
+        ON task_runs (warom_user_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS task_steps (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        query TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        result_message TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_id, seq)
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_steps_run_seq
+        ON task_steps (run_id, seq);
     `);
   }
 
@@ -98,5 +148,68 @@ export class DatabaseService implements OnModuleInit {
            based_on_event_id = excluded.based_on_event_id`,
       )
       .run(waromUserId, suggestion, basedOnEventId);
+  }
+
+  createTaskRun(waromUserId: string, utterance: string, reply: string): TaskRunRow {
+    this.db
+      .prepare(
+        `INSERT INTO task_runs (warom_user_id, utterance, reply, status)
+         VALUES (?, ?, ?, 'planned')`,
+      )
+      .run(waromUserId, utterance, reply);
+    return this.db
+      .prepare(`SELECT * FROM task_runs WHERE warom_user_id = ? ORDER BY id DESC LIMIT 1`)
+      .get(waromUserId) as unknown as TaskRunRow;
+  }
+
+  insertTaskSteps(
+    runId: number,
+    steps: Array<{ seq: number; type: string; query: string }>,
+  ): TaskStepRow[] {
+    const insert = this.db.prepare(
+      `INSERT INTO task_steps (run_id, seq, type, query, status) VALUES (?, ?, ?, ?, 'pending')`,
+    );
+    for (const step of steps) {
+      insert.run(runId, step.seq, step.type, step.query || '');
+    }
+    return this.listTaskSteps(runId);
+  }
+
+  listTaskSteps(runId: number): TaskStepRow[] {
+    return this.db
+      .prepare(`SELECT * FROM task_steps WHERE run_id = ? ORDER BY seq ASC`)
+      .all(runId) as unknown as TaskStepRow[];
+  }
+
+  getTaskRun(runId: number): TaskRunRow | undefined {
+    return this.db
+      .prepare(`SELECT * FROM task_runs WHERE id = ?`)
+      .get(runId) as unknown as TaskRunRow | undefined;
+  }
+
+  updateTaskRunStatus(runId: number, status: TaskRunStatus) {
+    this.db
+      .prepare(
+        `UPDATE task_runs SET status = ?, updated_at = datetime('now') WHERE id = ?`,
+      )
+      .run(status, runId);
+  }
+
+  updateTaskStep(
+    runId: number,
+    seq: number,
+    status: TaskStepStatus,
+    resultMessage: string,
+  ): TaskStepRow | undefined {
+    this.db
+      .prepare(
+        `UPDATE task_steps
+         SET status = ?, result_message = ?, updated_at = datetime('now')
+         WHERE run_id = ? AND seq = ?`,
+      )
+      .run(status, resultMessage || '', runId, seq);
+    return this.db
+      .prepare(`SELECT * FROM task_steps WHERE run_id = ? AND seq = ?`)
+      .get(runId, seq) as unknown as TaskStepRow | undefined;
   }
 }

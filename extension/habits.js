@@ -155,11 +155,80 @@
     }
   }
 
+  /** DeepSeek 拆步并落库 */
+  async function planTask(utterance) {
+    const userId = await resolveWaromUserId();
+    if (!userId) {
+      return { ok: false, skipped: true, reason: 'no-user', message: '未识别到工号，请到设置里填写' };
+    }
+    const data = await apiFetch('/api/tasks/plan', {
+      method: 'POST',
+      body: JSON.stringify({
+        waromUserId: userId,
+        utterance: String(utterance || '').trim().slice(0, 2000),
+      }),
+    });
+    return {
+      ok: true,
+      runId: data.runId,
+      reply: data.reply || '',
+      steps: Array.isArray(data.steps) ? data.steps : [],
+      userId,
+    };
+  }
+
+  async function startTaskRun(runId) {
+    if (!runId) return { ok: false };
+    try {
+      await apiFetch(`/api/tasks/${runId}/start`, { method: 'POST', body: '{}' });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error.message };
+    }
+  }
+
+  async function reportStep(runId, seq, status, resultMessage, finalizeRun) {
+    if (!runId || seq == null) return { ok: false };
+    try {
+      await apiFetch(`/api/tasks/${runId}/steps/${seq}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          status,
+          resultMessage: String(resultMessage || '').slice(0, 2000),
+          finalizeRun: Boolean(finalizeRun),
+        }),
+      });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error.message };
+    }
+  }
+
+  /** 步骤失败后再问 DeepSeek */
+  async function actOnFailedStep(runId, seq, lastError, pageSummary) {
+    if (!runId || seq == null) return null;
+    try {
+      return await apiFetch(`/api/tasks/${runId}/steps/${seq}/act`, {
+        method: 'POST',
+        body: JSON.stringify({
+          lastError: String(lastError || '').slice(0, 1000),
+          pageSummary: pageSummary || {},
+        }),
+      });
+    } catch (error) {
+      return { decision: 'ask_user', message: error.message || '补救建议失败' };
+    }
+  }
+
   return {
     resolveWaromUserId,
     readWaromUserIdFromPage,
     reportChat,
     fetchChatBoxSuggestion,
+    planTask,
+    startTaskRun,
+    reportStep,
+    actOnFailedStep,
     loadHabitSettings,
   };
 });

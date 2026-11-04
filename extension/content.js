@@ -607,7 +607,315 @@
       throw new Error((response && response.message) || '对话失败');
     }
     const parsed = WaromIntent.parseModelJson(response.content);
-    return WaromIntent.sanitizeChatAction(parsed);
+    return WaromIntent.sanitizeChatAction(parsed, utterance);
+  }
+
+  function setNativeValue(el, value) {
+    if (!el) return false;
+    const text = String(value);
+    try {
+      el.focus();
+    } catch (error) {
+      // 忽略
+    }
+    const wasReadonly = el.readOnly;
+    if (wasReadonly) el.readOnly = false;
+    const proto = el.tagName === 'TEXTAREA'
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (setter && setter.set) setter.set.call(el, text);
+    else el.value = text;
+    try {
+      el.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        cancelable: true,
+        data: text,
+        inputType: 'insertText',
+      }));
+    } catch (error) {
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true }));
+    if (wasReadonly) el.readOnly = true;
+    return true;
+  }
+
+  function normalizeFilterLabel(text) {
+    return String(text || '').replace(/\s+/g, '').replace(/[:：*＊]/g, '');
+  }
+
+  function isInSidebar(el) {
+    return Boolean(el && el.closest('.el-aside, .sidebar, .el-menu, .layout-sider, .left-menu, #warom-agent-host, #wf-agent-host'));
+  }
+
+  function isVisibleEl(el) {
+    if (!el || el.disabled) return false;
+    if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') return false;
+    const style = getComputedStyle(el);
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+  }
+
+  function findVueInstance(el) {
+    let node = el;
+    for (let i = 0; i < 12 && node; i += 1) {
+      if (node.__vue__) return node.__vue__;
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function readInputValue(el) {
+    if (!el) return '';
+    const wrap = el.closest('.el-select, .el-input, .el-textarea') || el;
+    const shown = wrap.querySelector('.el-input__inner, input, textarea') || el;
+    return String(shown.value || shown.getAttribute('value') || wrap.innerText || '').trim();
+  }
+
+  function valueLooksSet(actual, expected) {
+    if (!actual || !expected) return false;
+    const a = String(actual).replace(/\s+/g, '');
+    const b = String(expected).replace(/\s+/g, '');
+    return a === b || a.includes(b) || b.includes(a);
+  }
+
+  async function writeFilterInput(input, key) {
+    setNativeValue(input, key);
+    await delay(80);
+    if (valueLooksSet(readInputValue(input), key)) return true;
+    const vue = findVueInstance(input);
+    if (vue) {
+      try {
+        if (typeof vue.handleInput === 'function') vue.handleInput(key);
+        else if (typeof vue.$emit === 'function') {
+          vue.$emit('input', key);
+          vue.$emit('change', key);
+        }
+        if (vue.value !== undefined) vue.value = key;
+      } catch (error) {
+        // 忽略组件差异
+      }
+      await delay(80);
+    }
+    return valueLooksSet(readInputValue(input), key);
+  }
+
+  async function clickQueryNear(el) {
+    const root = (el && (el.closest('.el-form, .search-bar, .query-form, .toolbar, .ag-header') || el.parentElement)) || document;
+    const buttons = [...root.querySelectorAll('button, a.el-button, .el-button, [role="button"]')];
+    const globalButtons = [...document.querySelectorAll('button.el-button, .el-form button, .toolbar button')];
+    const pool = buttons.concat(globalButtons);
+    const searchBtn = pool.find((btn) => {
+      if (!isVisibleEl(btn) || isInSidebar(btn)) return false;
+      const text = (btn.innerText || btn.getAttribute('aria-label') || '').replace(/\s+/g, '');
+      return text === '查询' || text === '搜索' || text === '筛选' || text === '检索' || text === 'Search';
+    });
+    if (searchBtn) {
+      searchBtn.click();
+      await delay(600);
+      return true;
+    }
+    if (el) {
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+      await delay(400);
+      return true;
+    }
+    return false;
+  }
+
+  const GENERIC_FILTER_LABELS = [
+    '流程名称', '流程定义名称', '流程定义', '流程类型', '流程分类',
+    '名称', '标题', '主题', '单据标题', '单号', '编号', '编码', '代码',
+    '关键字', '关键词', '申请人', '发起人', '创建人', '部门', '类型', '状态', '分类',
+  ];
+
+  function fieldContextText(el) {
+    const item = el.closest('.el-form-item, .el-col, .ag-header-cell, .filter-item, .search-item');
+    const labelEl = item
+      ? item.querySelector('.el-form-item__label, label, .ag-header-cell-text')
+      : null;
+    const label = normalizeFilterLabel(labelEl ? labelEl.textContent : '');
+    const tip = `${el.placeholder || ''}${el.getAttribute('aria-label') || ''}${el.title || ''}`;
+    return { item, label, tip: tip.replace(/\s+/g, ''), text: `${label}${tip.replace(/\s+/g, '')}` };
+  }
+
+  function scoreFilterControl(el, key, utterance) {
+    const { label, tip, text } = fieldContextText(el);
+    const utter = String(utterance || '').replace(/\s+/g, '');
+    let score = 0;
+    if (!text) score += 0;
+    if (label && (label === key || label.includes(key) || key.includes(label))) score += 12;
+    if (tip && (tip.includes(key) || key.includes(tip))) score += 8;
+    for (const prefer of GENERIC_FILTER_LABELS) {
+      if (label === prefer) score += 6;
+      else if (label.includes(prefer) || prefer.includes(label)) score += 3;
+      if (tip.includes(prefer)) score += 2;
+    }
+    if (/搜索|查询|筛选|请输入/.test(tip)) score += 2;
+    // 用户原话里提到的字段名加分，例如「按标题搜索」
+    if (label && utter.includes(label)) score += 10;
+    if (el.closest('.ag-floating-filter, .ag-header-cell')) score += 1;
+    return score;
+  }
+
+  function listMainFilterInputs() {
+    return [...document.querySelectorAll('input.el-input__inner, input:not([type="hidden"]), textarea')]
+      .filter((el) => (
+        isVisibleEl(el)
+        && !isInSidebar(el)
+        && !el.readOnly
+        && !el.closest('.el-select, .el-pagination, .el-date-editor, .el-dialog')
+      ));
+  }
+
+  function listMainSelects() {
+    return [...document.querySelectorAll('.el-select')]
+      .filter((el) => isVisibleEl(el) && !isInSidebar(el) && !el.closest('.el-dialog, .el-pagination'));
+  }
+
+  /** 通用：任意列表页下拉中选包含关键字的选项 */
+  async function applySelectFilter(keyword, utterance) {
+    const key = String(keyword || '').trim();
+    const selects = listMainSelects();
+    if (!selects.length) return null;
+
+    // 按字段相关性排序，再尝试能否选中关键字选项
+    const ranked = selects
+      .map((sel) => {
+        const input = sel.querySelector('input') || sel;
+        return { sel, score: scoreFilterControl(input, key, utterance) };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    for (const { sel } of ranked) {
+      const trigger = sel.querySelector('.el-input__inner, input, .el-select__wrapper') || sel;
+      trigger.click();
+      await delay(300);
+      const dropdowns = [...document.querySelectorAll('.el-select-dropdown, .el-popper')]
+        .filter((panel) => isVisibleEl(panel));
+      const dropdown = dropdowns[dropdowns.length - 1];
+      if (!dropdown) {
+        document.body.click();
+        await delay(120);
+        continue;
+      }
+      const options = [...dropdown.querySelectorAll('.el-select-dropdown__item, li, .el-option')];
+      const hit = options.find((opt) => {
+        const text = (opt.innerText || '').replace(/\s+/g, '');
+        return text && (text === key || text.includes(key) || key.includes(text));
+      });
+      if (!hit) {
+        document.body.click();
+        await delay(120);
+        continue;
+      }
+      hit.click();
+      await delay(280);
+      await clickQueryNear(sel);
+      const shown = readInputValue(sel.querySelector('input') || sel);
+      if (valueLooksSet(shown, key) || (hit.innerText || '').includes(key)) {
+        return { ok: true, message: `已在下拉中选择「${key}」并查询。` };
+      }
+      return { ok: false, message: `点了下拉选项「${key}」，但页面未显示选中结果。` };
+    }
+    return null;
+  }
+
+  /** 通用：在当前页主内容区按相关度挑筛选输入框 */
+  function findBestFilterInput(key, utterance) {
+    const inputs = listMainFilterInputs();
+    // AG Grid 浮动筛选也算
+    const floating = [...document.querySelectorAll('.ag-header-cell input, .ag-floating-filter input')]
+      .filter((el) => isVisibleEl(el) && !isInSidebar(el));
+    const pool = inputs.concat(floating.filter((el) => !inputs.includes(el)));
+    if (!pool.length) return null;
+
+    let best = null;
+    let bestScore = -1;
+    for (const el of pool) {
+      const score = scoreFilterControl(el, key, utterance);
+      if (score > bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+    if (best && bestScore >= 2) return best;
+    // 只有一个可见搜索类输入时使用
+    const searchLike = pool.filter((el) => {
+      const { tip, label } = fieldContextText(el);
+      return /搜索|查询|筛选|请输入|名称|标题|主题|关键字/.test(`${label}${tip}`);
+    });
+    if (searchLike.length === 1) return searchLike[0];
+    if (pool.length === 1) return pool[0];
+    return bestScore > 0 ? best : null;
+  }
+
+  async function waitForListPageReady(timeout = 8000) {
+    try {
+      await waitFor(() => {
+        if (document.querySelector('.el-form-item input, .el-select, .ag-floating-filter input, .ag-root, .el-table, .el-form .el-button')) {
+          return true;
+        }
+        // 任意业务页：出现查询按钮也算就绪
+        const buttons = [...document.querySelectorAll('button, .el-button')];
+        return buttons.some((btn) => {
+          if (!isVisibleEl(btn) || isInSidebar(btn)) return false;
+          const text = (btn.innerText || '').replace(/\s+/g, '');
+          return text === '查询' || text === '搜索' || text === '重置';
+        });
+      }, timeout);
+    } catch (error) {
+      // 超时也继续试
+    }
+    await delay(400);
+  }
+
+  /** 通用列表筛选：不绑定待办，适用于任意已打开的列表/查询页 */
+  async function applyListFilter(keyword, utterance) {
+    const key = String(keyword || '').trim();
+    if (!key) return { status: 'error', message: '没有筛选关键字。', choices: [] };
+
+    await waitForListPageReady();
+
+    const selectResult = await applySelectFilter(key, utterance);
+    if (selectResult) {
+      return selectResult.ok
+        ? { status: 'open', message: selectResult.message, choices: [] }
+        : { status: 'error', message: selectResult.message, choices: [] };
+    }
+
+    const input = findBestFilterInput(key, utterance || '');
+    if (!input) {
+      return {
+        status: 'error',
+        message: `当前页面没有找到可用的筛选/搜索框，无法自动筛「${key}」。请确认已打开目标列表页后重试，或手动筛选。`,
+        choices: [],
+      };
+    }
+
+    const written = await writeFilterInput(input, key);
+    if (!written) {
+      return {
+        status: 'error',
+        message: `找到了筛选框，但未能写入「${key}」（可能是只读或组件未接受）。请手动填写。`,
+        choices: [],
+      };
+    }
+
+    await clickQueryNear(input);
+    await delay(300);
+    if (!valueLooksSet(readInputValue(input), key)) {
+      return {
+        status: 'error',
+        message: `已尝试查询，但筛选框里没有保留「${key}」，页面可能未生效。`,
+        choices: [],
+      };
+    }
+    const { label } = fieldContextText(input);
+    const where = label ? `「${label}」` : '筛选框';
+    return { status: 'open', message: `已在${where}写入「${key}」并触发查询。`, choices: [] };
   }
 
   async function executeChatAction(action, utterance) {
@@ -632,6 +940,7 @@
       const hits = matchMenusLocally(query);
       if (hits.length === 1) {
         const opened = await openCandidate(hits[0]);
+        if (opened && opened.status === 'open') await waitForListPageReady(10000);
         return { ...opened, choices: [] };
       }
       if (hits.length > 1) {
@@ -649,17 +958,197 @@
         id: 'todo:entry',
         title: '我的待办',
       });
+      if (opened && opened.status === 'open') {
+        // 等列表页就绪，再给下一步通用筛选
+        await waitForListPageReady(10000);
+      }
       return { ...opened, choices: [] };
+    }
+    if (type === 'filter_list') {
+      return applyListFilter(query, utterance);
     }
     return { status: 'chat', message: '', choices: [] };
   }
 
+  function collectPageSummary() {
+    const labels = [...document.querySelectorAll('.el-form-item__label, label')]
+      .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .slice(0, 12);
+    return {
+      title: document.title || '',
+      hash: location.hash || '',
+      hasDialog: visibleDialogs().length > 0,
+      formLabels: labels,
+    };
+  }
+
+  function stepLooksFailed(result) {
+    if (!result) return true;
+    return result.status === 'error' || result.status === 'none' || result.status === 'disabled';
+  }
+
+  async function executeChatActions(actions, utterance, options) {
+    const opts = options || {};
+    const runId = opts.runId;
+    const list = Array.isArray(actions) && actions.length
+      ? actions
+      : [{ type: 'none', query: '' }];
+    const stepMessages = [];
+    let last = { status: 'chat', message: '', choices: [] };
+    const Habits = typeof WaromHabits !== 'undefined' ? WaromHabits : null;
+
+    if (runId && Habits) {
+      Habits.startTaskRun(runId).catch(() => {});
+    }
+
+    for (let i = 0; i < list.length; i += 1) {
+      let action = list[i];
+      if (!action || action.type === 'none') continue;
+      const seq = action.seq != null ? Number(action.seq) : i + 1;
+
+      if (runId && Habits) {
+        Habits.reportStep(runId, seq, 'running', '', false).catch(() => {});
+      }
+
+      last = await executeChatAction(action, utterance);
+
+      // 失败时再问 DeepSeek 如何补救，最多重试一次
+      if (stepLooksFailed(last) && runId && Habits && last.status !== 'choose' && last.status !== 'login') {
+        const advice = await Habits.actOnFailedStep(
+          runId,
+          seq,
+          last.message || last.status,
+          collectPageSummary(),
+        );
+        if (advice && advice.decision === 'retry') {
+          const retryAction = {
+            type: advice.type || action.type,
+            query: advice.query != null && advice.query !== '' ? advice.query : action.query,
+          };
+          last = await executeChatAction(retryAction, utterance);
+          if (last.message && advice.message) {
+            last = { ...last, message: `${last.message}（补救：${advice.message}）` };
+          }
+        } else if (advice && advice.decision === 'skip') {
+          last = {
+            status: 'open',
+            message: advice.message || `已跳过步骤 ${seq}`,
+            choices: [],
+          };
+        } else if (advice && (advice.decision === 'ask_user' || advice.decision === 'stop')) {
+          last = {
+            status: advice.decision === 'stop' ? 'error' : 'error',
+            message: advice.message || last.message,
+            choices: last.choices || [],
+          };
+        }
+      }
+
+      if (last && last.message) stepMessages.push(last.message);
+
+      const stepStatus = last.status === 'choose' || last.status === 'login'
+        ? 'failed'
+        : stepLooksFailed(last)
+          ? 'failed'
+          : 'done';
+      const isLast = i >= list.length - 1
+        || last.status === 'choose'
+        || last.status === 'login'
+        || stepStatus === 'failed';
+      if (runId && Habits) {
+        Habits.reportStep(runId, seq, stepStatus, last.message || '', isLast).catch(() => {});
+      }
+
+      if (last.status === 'choose' || last.status === 'login' || stepStatus === 'failed') break;
+      if (i < list.length - 1 && ['open_todo', 'open_menu', 'open_workflow'].includes(action.type)) {
+        await delay(2000);
+      }
+    }
+
+    if (!stepMessages.length && last.status === 'chat') {
+      return last;
+    }
+    return {
+      ...last,
+      message: stepMessages.join('\n'),
+      stepMessages,
+      choices: last.choices || [],
+      runId: runId || null,
+    };
+  }
+
   function formatChatResult(reply, exec) {
     const lines = [`助手：${reply || ''}`];
-    if (exec && exec.status && exec.status !== 'chat' && exec.message) {
-      lines.push('', `执行：${exec.message}`);
+    if (exec && exec.runId) {
+      lines.push(`任务 #${exec.runId}`);
+    }
+    const steps = exec && Array.isArray(exec.stepMessages) && exec.stepMessages.length
+      ? exec.stepMessages
+      : (exec && exec.message ? [exec.message] : []);
+    if (steps.length) {
+      lines.push('', '执行：');
+      steps.forEach((item, index) => {
+        lines.push(`${index + 1}. ${item}`);
+      });
     }
     return lines.join('\n');
+  }
+
+  /** 优先 Nest DeepSeek 规划入库；失败再退回扩展内对话拆步 */
+  async function planAndRunUtterance(utterance, options) {
+    const Habits = typeof WaromHabits !== 'undefined' ? WaromHabits : null;
+    let reply = '';
+    let actions = [];
+    let runId = null;
+    let plannedVia = 'extension';
+
+    if (Habits) {
+      try {
+        const planned = await Habits.planTask(utterance);
+        if (planned && planned.ok && Array.isArray(planned.steps) && planned.steps.length) {
+          reply = planned.reply || '好的，已拆成步骤。';
+          runId = planned.runId;
+          actions = planned.steps.map((step) => ({
+            type: step.type,
+            query: step.query || '',
+            seq: step.seq,
+          }));
+          plannedVia = 'server';
+        } else if (planned && planned.ok && planned.runId && (!planned.steps || !planned.steps.length)) {
+          // 服务端未拆出步骤：保留 runId，继续用扩展拆步执行并回写
+          runId = planned.runId;
+          reply = planned.reply || '';
+        }
+      } catch (error) {
+        // Nest 规划失败则走扩展 DeepSeek
+        reply = '';
+      }
+    }
+
+    if (!actions.length) {
+      const chat = await askDeepSeekChat(utterance, options && options.history);
+      reply = chat.reply;
+      actions = chat.actions && chat.actions.length ? chat.actions : [chat.action];
+      plannedVia = 'extension';
+    }
+
+    const exec = await executeChatActions(actions, utterance, { runId });
+    return {
+      ...exec,
+      status: exec.status === 'chat' ? 'chat' : exec.status,
+      message: formatChatResult(reply, exec),
+      reply,
+      action: actions[0] || { type: 'none', query: '' },
+      actions,
+      plannedVia,
+      choices: exec.choices || [],
+      requiredReady: exec.requiredReady,
+      missing: exec.missing || [],
+      missingTitles: exec.missingTitles || [],
+      filled: exec.filled || {},
+      runId: exec.runId || runId,
+    };
   }
 
   async function handleUtterance(utterance, options) {
@@ -669,27 +1158,17 @@
 
     const settings = await loadAiSettings();
     const aiReady = Boolean(settings && settings.enabled && settings.hasKey);
+    const habitSettings = typeof WaromHabits !== 'undefined'
+      ? await WaromHabits.loadHabitSettings()
+      : null;
+    const serverPlanReady = Boolean(habitSettings && habitSettings.habitEnabled && habitSettings.habitBackendUrl);
 
-    // 已配置 DeepSeek：先对话，再按模型给出的 action 做本地匹配/打开
-    if (aiReady) {
+    // Nest 规划 或 扩展 DeepSeek：拆步 →（入库）→ 逐步执行 → 失败再 Act
+    if (serverPlanReady || aiReady) {
       try {
-        const chat = await askDeepSeekChat(utterance, options && options.history);
-        const exec = await executeChatAction(chat.action, utterance);
-        return {
-          ...exec,
-          status: exec.status === 'chat' ? 'chat' : exec.status,
-          message: formatChatResult(chat.reply, exec),
-          reply: chat.reply,
-          action: chat.action,
-          choices: exec.choices || [],
-          requiredReady: exec.requiredReady,
-          missing: exec.missing || [],
-          missingTitles: exec.missingTitles || [],
-          filled: exec.filled || {},
-        };
+        return await planAndRunUtterance(utterance, options);
       } catch (error) {
-        // 对话失败则退回本地逻辑
-        const fallbackNote = `（DeepSeek 对话失败：${error.message || '调用失败'}，已改用本地处理）`;
+        const fallbackNote = `（智能规划失败：${error.message || '调用失败'}，已改用本地处理）`;
         if (typeof WaromLeaveSkill !== 'undefined' && WaromLeaveSkill.looksLikeLeaveTask(utterance)) {
           const local = await runLeaveAgent(utterance);
           return { ...local, message: `${local.message}\n${fallbackNote}` };

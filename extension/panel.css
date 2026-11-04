@@ -1,4 +1,4 @@
-#warom-agent-root {
+#wf-agent-root {
   position: fixed;
   right: 20px;
   bottom: 20px;
@@ -7,11 +7,11 @@
   color: #1f2933;
 }
 
-#warom-agent-root * {
+#wf-agent-root * {
   box-sizing: border-box;
 }
 
-#warom-agent-toggle {
+#wf-agent-toggle {
   border: 0;
   border-radius: 999px;
   padding: 10px 16px;
@@ -21,7 +21,7 @@
   cursor: pointer;
 }
 
-#warom-agent-panel {
+#wf-agent-panel {
   display: none;
   width: 320px;
   margin-bottom: 10px;
@@ -31,21 +31,21 @@
   box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18);
 }
 
-#warom-agent-panel.is-open {
+#wf-agent-panel.is-open {
   display: block;
 }
 
-#warom-agent-panel h2 {
+#wf-agent-panel h2 {
   margin: 0 0 8px;
   font-size: 16px;
 }
 
-#warom-agent-panel p {
+#wf-agent-panel p {
   margin: 0 0 10px;
   color: #52606d;
 }
 
-#warom-agent-input {
+#wf-agent-input {
   width: 100%;
   min-height: 72px;
   padding: 8px 10px;
@@ -55,7 +55,7 @@
   font: inherit;
 }
 
-#warom-agent-run {
+#wf-agent-run {
   width: 100%;
   height: 36px;
   margin-top: 10px;
@@ -67,7 +67,7 @@
   cursor: pointer;
 }
 
-#warom-agent-result {
+#wf-agent-result {
   min-height: 1.5em;
   margin: 10px 0 0;
   white-space: pre-wrap;

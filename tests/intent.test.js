@@ -72,11 +72,38 @@ test('对话动作清洗：请假填表', () => {
   assert.equal(chat.reply, '好的，帮你开请假');
   assert.equal(chat.action.type, 'leave.open_fill');
   assert.equal(chat.action.query, '打开请假');
+  assert.equal(chat.actions.length, 1);
 });
 
 test('对话动作清洗：未知 type 变 none', () => {
   const chat = sanitizeChatAction({ reply: '嗯', action: { type: 'hack' } });
   assert.equal(chat.action.type, 'none');
+});
+
+test('对话动作清洗：多步 actions 保持顺序', () => {
+  const chat = sanitizeChatAction({
+    reply: '先开待办再筛选',
+    actions: [
+      { type: 'open_todo', query: '我的待办' },
+      { type: 'filter_list', query: '通用流程' },
+    ],
+  });
+  assert.deepEqual(chat.actions.map((item) => item.type), ['open_todo', 'filter_list']);
+  assert.equal(chat.actions[1].query, '通用流程');
+});
+
+test('对话动作清洗：只返回待办时按原话补筛选步', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '好的',
+      action: { type: 'open_todo', query: '我的待办' },
+    },
+    '我的待办页面筛选通用流程的数据',
+  );
+  assert.deepEqual(chat.actions.map((item) => [item.type, item.query]), [
+    ['open_todo', '我的待办'],
+    ['filter_list', '通用流程'],
+  ]);
 });
 
 test('填表映射只保留页面上的字段 label', () => {

@@ -1,34 +1,34 @@
-# 华荣流程发起技能设计
+# 流程发起技能设计
 
 日期：2026-10-28
 
 ## 目标
 
-做一个个人 Cursor 技能。用户在已登录的华荣照明信息平台里，用自然语言说要发起哪条流程时，技能从当前页面直接打开发起弹窗，用来填写一张单据。
+做一个个人 Cursor 技能。用户在已登录的目标信息平台里，用自然语言说要发起哪条流程时，技能从当前页面直接打开发起弹窗，用来填写一张单据。
 
 站点前缀：
 
-`https://test.warom-lighting.com/v2_debug_ouyang/#/`
+`https://platform.example.com/app/#/`
 
 流程定义页：
 
-`https://test.warom-lighting.com/v2_debug_ouyang/#/workflow/workflow-base/agent`
+`https://platform.example.com/app/#/workflow/workflow-base/agent`
 
 该页在地址上带有流程代码时，会按代码打开发起弹窗。例如代码为 `00003` 时，地址是：
 
-`https://test.warom-lighting.com/v2_debug_ouyang/#/workflow/workflow-base/agent?code=00003`
+`https://platform.example.com/app/#/workflow/workflow-base/agent?code=00003`
 
 页面用去掉前导零后的代码比较，因此 `00003`、`003`、`3` 指向同一条定义。弹窗用于新建单据，不打开流程定义编辑页。
 
 ## 技能位置与触发
 
-技能目录：`C:\Users\1\.cursor\skills\warom-open-workflow\SKILL.md`
+技能目录：`~/.cursor/skills/open-workflow\SKILL.md`
 
 这是个人技能，不放进某个业务仓库，也不放进 `skills-cursor`。
 
 `SKILL.md` 不设置 `disable-model-invocation`，这样用户直接说「打开请假流程」「我要发起内部留言」时，agent 会按描述自动使用它。
 
-描述用第三人称，写明两件事：在华荣照明信息平台 `v2_debug_ouyang` 里按用户说法打开发起弹窗；用户提到打开、发起、新建某条流程，或提到该站点的流程定义页时使用。
+描述用第三人称，写明两件事：在目标信息平台 `app` 里按用户说法打开发起弹窗；用户提到打开、发起、新建某条流程，或提到该站点的流程定义页时使用。
 
 ## 不保存流程名单
 
@@ -86,7 +86,7 @@
 
 命中后的地址：
 
-`https://test.warom-lighting.com/v2_debug_ouyang/#/workflow/workflow-base/agent?code=` 加上该行当前的代码。
+`https://platform.example.com/app/#/workflow/workflow-base/agent?code=` 加上该行当前的代码。
 
 当前浏览器已经在这个站点前缀下的任意 hash 页面时，只改 hash。当前不在这个站点时，打开完整地址。
 

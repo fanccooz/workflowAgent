@@ -3,7 +3,7 @@ const path = require('path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const skillDir = path.join(process.env.USERPROFILE, '.cursor', 'skills', 'warom-open-workflow');
+const skillDir = path.join(process.env.USERPROFILE, '.cursor', 'skills', 'open-workflow');
 
 const forbidden = [
   '请假申请',
@@ -27,7 +27,11 @@ function listFiles(dir) {
   });
 }
 
-test('技能目录不保存流程名称和代码对照', () => {
+test('技能目录不保存流程名称和代码对照', (t) => {
+  if (!fs.existsSync(skillDir)) {
+    t.skip(`未找到技能目录：${skillDir}`);
+    return;
+  }
   const hits = [];
   for (const file of listFiles(skillDir)) {
     const text = fs.readFileSync(file, 'utf8');

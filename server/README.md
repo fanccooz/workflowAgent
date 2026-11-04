@@ -21,5 +21,13 @@ npx nest start
 - `POST /api/events/chat`  
   `{ "waromUserId": "工号", "content": "用户输入", "role": "user" }`
 - `GET /api/suggestions/chat-box?waromUserId=工号`
+- `POST /api/tasks/plan`  
+  `{ "waromUserId": "工号", "utterance": "用户原话" }` → DeepSeek 拆步并写入 SQLite
+- `GET /api/tasks/:runId`
+- `POST /api/tasks/:runId/start`
+- `PATCH /api/tasks/:runId/steps/:seq`  
+  `{ "status": "done|failed|skipped", "resultMessage": "...", "finalizeRun": true }`
+- `POST /api/tasks/:runId/steps/:seq/act`  
+  `{ "lastError": "...", "pageSummary": {} }` → 失败时再问 DeepSeek 如何补救
 
-请求头可选：`X-Extension-Token: 与 EXTENSION_TOKEN 相同`
+请求头：`X-Extension-Token: 与 EXTENSION_TOKEN 相同`

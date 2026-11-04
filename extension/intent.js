@@ -142,19 +142,72 @@
     return JSON.parse(jsonText);
   }
 
-  const CHAT_ACTIONS = ['none', 'leave.open_fill', 'open_workflow', 'open_menu', 'open_todo'];
+  const CHAT_ACTIONS = ['none', 'leave.open_fill', 'open_workflow', 'open_menu', 'open_todo', 'filter_list'];
 
-  function sanitizeChatAction(raw) {
-    const data = raw && typeof raw === 'object' ? raw : {};
-    const actionRaw = data.action && typeof data.action === 'object' ? data.action : {};
+  function cleanOneAction(raw) {
+    const actionRaw = raw && typeof raw === 'object' ? raw : {};
     let type = String(actionRaw.type || 'none');
     if (!CHAT_ACTIONS.includes(type)) type = 'none';
     return {
+      type,
+      query: String(actionRaw.query || '').trim(),
+    };
+  }
+
+  /** 从用户原话补全「导航 + 筛选」等多步（任意列表页，不限待办） */
+  function inferFilterFollowUp(utterance, actions) {
+    const text = String(utterance || '').replace(/\s+/g, '');
+    const list = Array.isArray(actions) ? actions.slice() : [];
+    if (list.some((item) => item.type === 'filter_list')) return list;
+    if (!/筛选|过滤|按.+查|查出|查找|搜索/.test(text)) return list;
+
+    let keyword = '';
+    const patterns = [
+      /筛选([^的数据页面列表]+)/,
+      /过滤([^的数据页面列表]+)/,
+      /搜索([^的数据页面列表]+)/,
+      /按([^筛选过滤]+)筛选/,
+      /查找([^的]+)/,
+      /跟([^有关相关]+)/,
+    ];
+    for (const pattern of patterns) {
+      const hit = text.match(pattern);
+      if (hit && hit[1]) {
+        keyword = hit[1].replace(/^(页面|列表|数据|有关|相关)/, '').trim();
+        if (keyword) break;
+      }
+    }
+    if (!keyword) return list;
+
+    const usable = list.filter((item) => item.type !== 'none');
+    const hasNav = usable.some((item) => ['open_todo', 'open_menu', 'open_workflow'].includes(item.type));
+    if (!hasNav) {
+      if (/待办/.test(text)) usable.push({ type: 'open_todo', query: '我的待办' });
+      else {
+        const menuHit = text.match(/(?:打开|进入|去)([^，,。筛选过滤搜索查询页面列表]{2,16})(?:页面|列表|模块|菜单)?/);
+        if (menuHit && menuHit[1]) usable.push({ type: 'open_menu', query: menuHit[1] });
+      }
+    }
+    usable.push({ type: 'filter_list', query: keyword });
+    return usable;
+  }
+
+  function sanitizeChatAction(raw, utterance) {
+    const data = raw && typeof raw === 'object' ? raw : {};
+    let actions = [];
+    if (Array.isArray(data.actions) && data.actions.length) {
+      actions = data.actions.map(cleanOneAction);
+    } else if (data.action && typeof data.action === 'object') {
+      actions = [cleanOneAction(data.action)];
+    } else {
+      actions = [{ type: 'none', query: '' }];
+    }
+    actions = inferFilterFollowUp(utterance || '', actions);
+    const first = actions[0] || { type: 'none', query: '' };
+    return {
       reply: String(data.reply || data.message || '').trim() || '好的。',
-      action: {
-        type,
-        query: String(actionRaw.query || '').trim(),
-      },
+      action: first,
+      actions,
     };
   }
 
@@ -226,6 +279,7 @@
     findById,
     sanitizeDecision,
     sanitizeChatAction,
+    inferFilterFollowUp,
     sanitizeReflect,
     sanitizeFillMap,
     parseModelJson,
