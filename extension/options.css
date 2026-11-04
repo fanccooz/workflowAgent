@@ -1,0 +1,108 @@
+body {
+  margin: 0;
+  background: #f5f7fb;
+  color: #1f2933;
+  font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+main {
+  max-width: 480px;
+  margin: 24px auto;
+  padding: 20px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+h2 {
+  margin: 20px 0 10px;
+  font-size: 16px;
+}
+
+textarea {
+  width: 100%;
+  min-height: 64px;
+  padding: 8px 10px;
+  border: 1px solid #cbd2d9;
+  border-radius: 8px;
+  resize: vertical;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.examples {
+  margin: 0;
+  padding-left: 18px;
+  color: #52606d;
+}
+
+.examples code {
+  color: #243b53;
+}
+
+.hint {
+  margin: 0 0 16px;
+  color: #52606d;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+label.row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+input, select {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid #cbd2d9;
+  border-radius: 8px;
+  font: inherit;
+}
+
+#apiKey {
+  font-family: Consolas, "Courier New", monospace;
+}
+
+input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+
+.tip {
+  margin: -4px 0 14px;
+  color: #829ab1;
+  font-size: 12px;
+}
+
+.actions {
+  margin-top: 8px;
+}
+
+button {
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 8px;
+  background: #2457d6;
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.status {
+  min-height: 1.5em;
+  margin: 12px 0 0;
+  color: #2457d6;
+}

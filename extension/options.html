@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>流程助手设置</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <h1>流程助手设置</h1>
+    <p class="hint">DeepSeek Key 与关键字都只保存在本机 Chrome。</p>
+
+    <h2>DeepSeek</h2>
+    <label class="row">
+      <input id="enabled" type="checkbox">
+      <span>启用 DeepSeek AI 搜索</span>
+    </label>
+
+    <label>
+      <span>服务商</span>
+      <select id="provider">
+        <option value="deepseek">DeepSeek</option>
+      </select>
+    </label>
+
+    <label>
+      <span>DeepSeek API Key</span>
+      <input id="apiKey" type="text" placeholder="在此粘贴 sk- 开头的 Key" autocomplete="off" spellcheck="false">
+    </label>
+    <p class="tip">可在 DeepSeek 开放平台创建并复制 API Key，粘贴后点保存。</p>
+
+    <label>
+      <span>Base URL</span>
+      <input id="baseUrl" type="text" placeholder="https://api.deepseek.com">
+    </label>
+
+    <label>
+      <span>模型名</span>
+      <input id="model" type="text" placeholder="deepseek-chat">
+    </label>
+
+    <h2>习惯建议语后端（Nest）</h2>
+    <p class="tip">用于把 DeepSeek 根据最近聊天生成的句子填进助手输入框。需先启动 server。</p>
+    <label class="row">
+      <input id="habitEnabled" type="checkbox">
+      <span>启用习惯建议语</span>
+    </label>
+    <label>
+      <span>后端地址</span>
+      <input id="habitBackendUrl" type="text" placeholder="http://localhost:3000">
+    </label>
+    <label>
+      <span>扩展 Token（与 server 的 EXTENSION_TOKEN 一致）</span>
+      <input id="habitExtensionToken" type="text" placeholder="warom-dev-token" autocomplete="off">
+    </label>
+    <label>
+      <span>华荣工号（优先；不填则尝试从页面识别）</span>
+      <input id="waromUserId" type="text" placeholder="例如 10001">
+    </label>
+
+    <h2>触发关键字</h2>
+    <p class="tip">多个词用逗号或换行分隔。会和系统默认词合并。例如打开菜单时可加：打开菜单,进入,导航到</p>
+
+    <label>
+      <span>流程关键字（说这些词时优先当「打开流程」）</span>
+      <textarea id="workflowKeywords" rows="3" placeholder="流程,打开,发起,新建,填写"></textarea>
+    </label>
+
+    <label>
+      <span>菜单关键字（说这些词时优先当「打开菜单」）</span>
+      <textarea id="menuKeywords" rows="3" placeholder="菜单,进入,模块,页面,导航"></textarea>
+    </label>
+
+    <label>
+      <span>待办关键字</span>
+      <textarea id="todoKeywords" rows="2" placeholder="待办,待我审批,我的待办,待审"></textarea>
+    </label>
+
+    <div class="actions">
+      <button id="save" type="button">保存设置</button>
+    </div>
+    <p id="status" class="status" aria-live="polite"></p>
+
+    <h2>怎么说话</h2>
+    <ul class="examples">
+      <li>打开流程：<code>打开请假流程</code></li>
+      <li>打开菜单：<code>进入人事模块</code>、<code>打开菜单 流程定义</code></li>
+      <li>打开待办：<code>打开我的待办</code></li>
+    </ul>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>
