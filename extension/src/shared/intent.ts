@@ -151,103 +151,8 @@
     };
   }
 
-  function saidTodo(text) {
-    return /待办/.test(String(text || ''));
-  }
-
-  /** 明确要打开待办；问答「有多少条」不算打开 */
-  function wantsOpenTodo(text) {
-    const raw = String(text || '').replace(/\s+/g, '');
-    if (!/待办/.test(raw)) return false;
-    if (/[？?]|多少|几条|什么|吗|呢|是否|有没有|怎么|如何/.test(raw) && !/打开|进入/.test(raw)) {
-      return false;
-    }
-    return /打开|进入|发起|新建|去我的待办|^我的待办$/.test(raw);
-  }
-
-  function saidOpenOrEnter(text) {
-    // 打开/进入/发起/新建 = 跳页；「去某某」也算。单纯「搜索」不算打开。
-    return /打开|进入|发起|新建|帮我开|(?:^|[，,。；;])去/.test(String(text || ''));
-  }
-
-  function saidSearchOnly(text) {
-    const raw = String(text || '');
-    return /筛选|过滤|搜索|查找/.test(raw) && !saidOpenOrEnter(raw) && !saidTodo(raw);
-  }
-
-  function extractSearchKeyword(text) {
-    const raw = String(text || '').replace(/\s+/g, '');
-    const patterns = [
-      /备注(?:中|里)?(?:有|含|为|是|:|：)\s*([^，,。；;的数据]+)/,
-      /筛选([^的数据页面列表]+)/,
-      /过滤([^的数据页面列表]+)/,
-      /搜索([^的数据页面列表]+)/,
-      /按([^筛选过滤]+)筛选/,
-      /查找([^的]+)/,
-      /跟([^有关相关]+)/,
-    ];
-    for (const pattern of patterns) {
-      const hit = raw.match(pattern);
-      if (hit && hit[1]) {
-        const keyword = hit[1]
-          .replace(/^(页面|列表|数据|有关|相关|备注[为是:：]?|中有|里有)/, '')
-          .replace(/的数据$/, '')
-          .trim();
-        if (keyword) return keyword;
-      }
-    }
-    return '';
-  }
-
-  function stripUnauthorizedNavigation(text, actions) {
-    let list = Array.isArray(actions) ? actions.slice() : [];
-    if (!text) return list;
-    // 纯搜索：只保留 filter_list，绝不跳页
-    if (saidSearchOnly(text)) {
-      return list.filter((item) => item.type === 'filter_list');
-    }
-    if (!wantsOpenTodo(text)) list = list.filter((item) => item.type !== 'open_todo');
-    if (!saidOpenOrEnter(text)) {
-      list = list.filter((item) => item.type !== 'open_menu' && item.type !== 'open_workflow');
-    }
-    return list;
-  }
-
-  /** 从用户原话补全「导航 + 筛选」等多步；搜索=当前页，打开=跳页 */
-  function inferFilterFollowUp(utterance, actions) {
-    const text = String(utterance || '').replace(/\s+/g, '');
-    let list = stripUnauthorizedNavigation(text, actions);
-    if (!/筛选|过滤|按.+查|查出|查找|搜索/.test(text)) return list;
-
-    const keyword = extractSearchKeyword(text);
-    if (!keyword && list.some((item) => item.type === 'filter_list')) return list;
-
-    // 只搜索：强制当前页 filter_list
-    if (saidSearchOnly(text)) {
-      if (!keyword) return list.length ? list : [{ type: 'none', query: '' }];
-      return [{ type: 'filter_list', query: keyword }];
-    }
-
-    if (list.some((item) => item.type === 'filter_list')) return list;
-    if (!keyword) return list;
-
-    const usable = list.filter((item) => item.type !== 'none');
-    const hasNav = usable.some((item) => ['open_todo', 'open_menu', 'open_workflow'].includes(item.type));
-    const wantsNav = wantsOpenTodo(text) || saidOpenOrEnter(text);
-    if (!hasNav && wantsNav) {
-      if (wantsOpenTodo(text)) usable.push({ type: 'open_todo', query: '我的待办' });
-      else if (saidOpenOrEnter(text)) {
-        const menuHit = text.match(/(?:打开|进入|去)([^，,。筛选过滤搜索查询页面列表]{2,16})(?:页面|列表|模块|菜单)?/);
-        if (menuHit && menuHit[1] && !/待办/.test(menuHit[1])) {
-          usable.push({ type: 'open_menu', query: menuHit[1] });
-        }
-      }
-    }
-    usable.push({ type: 'filter_list', query: keyword });
-    return stripUnauthorizedNavigation(text, usable);
-  }
-
-  function sanitizeChatAction(raw, utterance) {
+  /** 只校验动作类型与字段，意图判断交给 DeepSeek */
+  function sanitizeChatAction(raw) {
     const data = raw && typeof raw === 'object' ? raw : {};
     let actions = [];
     if (Array.isArray(data.actions) && data.actions.length) {
@@ -257,23 +162,9 @@
     } else {
       actions = [{ type: 'none', query: '' }];
     }
-    actions = inferFilterFollowUp(utterance || '', actions);
     if (!actions.length) actions = [{ type: 'none', query: '' }];
     const first = actions[0] || { type: 'none', query: '' };
-    let reply = String(data.reply || data.message || '').trim();
-    if (first.type === 'none' && !reply) {
-      const ask = String(utterance || '');
-      if (/[？?]|多少|几条|什么|吗|呢/.test(ask)) {
-        reply = '我还没读到可用的页面数据，请再说一次，或先打开目标列表页。';
-      } else if (saidSearchOnly(ask)) {
-        reply = '好的，我在当前页面搜索。';
-      } else {
-        reply = '嗯，我在。你可以继续聊；要办事可以说「打开某某」，要搜可以说「搜索某某」。';
-      }
-    }
-    if (first.type === 'filter_list' && !reply) {
-      reply = `好的，在当前页搜索「${first.query || ''}」。`;
-    }
+    const reply = String(data.reply || data.message || '').trim();
     return {
       reply: reply || '好的。',
       action: first,
@@ -347,10 +238,6 @@ export {DEFAULT_KEYWORDS,
     findById,
     sanitizeDecision,
     sanitizeChatAction,
-    inferFilterFollowUp,
     sanitizeReflect,
     sanitizeFillMap,
-    parseModelJson,
-    wantsOpenTodo,
-    saidOpenOrEnter,
-    saidSearchOnly,};
+    parseModelJson,};

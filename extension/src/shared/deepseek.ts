@@ -88,31 +88,20 @@
     return out;
   }
 
-  function looksLikePageQuestion(utterance) {
-    const text = String(utterance || '');
-    return /[？?]|多少|几条|什么|吗|呢|当前页|这个页面|有多少|几条数据/.test(text);
-  }
-
-  function looksLikePageOp(utterance) {
-    const text = String(utterance || '');
-    return /打开|进入|发起|新建|待办|流程|菜单|模块|页面|筛选|过滤|搜索|查找|请假|出差|加班/.test(text)
-      || looksLikePageQuestion(text);
-  }
-
   function buildChatMessages(utterance, history, pageSummary) {
     const system = [
-      '你是目标信息平台里的中文助手，可以正常闲聊，也可以办事。',
-      '必须结合「最近对话」理解指代与追问，不要当每句都是新会话。',
-      '【打开 vs 搜索】',
-      '- 「打开/进入/发起/新建」= 跳转打开页面。',
-      '- 「搜索/筛选/过滤/查找」= 只在当前页 filter_list，禁止因此跳页。',
-      '【回答页面问题】用户问「有多少条/当前页数据」时：type=none，根据页面摘要里的 listTotal / visibleRowCount / paginationText 直接回答；禁止敷衍「我在，你可以继续说」。',
-      '问句里提到「待办」但没有说打开/进入 → 不要 open_todo，只回答问题。',
-      '闲聊问候：type=none，自然回复。',
-      '硬性：没说打开/进入/发起/新建时禁止跳页；只搜索时只 filter_list。',
-      '只输出一个 JSON 对象。格式：',
+      '你是目标信息平台里的中文助手。由你判断用户意图并决定动作，本地不会用关键字抢答。',
+      '必须结合「最近对话」理解指代与追问。',
+      '你会收到「当前页面摘要」（含 listTotal、visibleRowCount、paginationText、activeMenu 等），请据此回答与办事。',
+      '动作约定：',
+      '- none：闲聊、问答、无需操作。问「有多少条/当前页数据」时必须根据摘要直接答出数字，禁止敷衍。',
+      '- open_workflow / open_menu / open_todo：仅当用户明确要打开/进入/发起/新建某页时使用。',
+      '- filter_list：仅当用户要在当前页搜索/筛选时使用，不要因此跳页。',
+      '- leave.open_fill：用户要请假并填写时使用。',
+      '问句里提到页面名但没说打开 → 只回答，不要跳页。',
+      '只输出一个 JSON 对象，不要 Markdown：',
       '{"reply":"给用户看的话","actions":[{"type":"none|leave.open_fill|open_workflow|open_menu|open_todo|filter_list","query":"短句"}]}',
-      '示例：「当前页面有多少条数据？」且摘要 listTotal=12 → {"reply":"当前页面共 12 条数据。","actions":[{"type":"none","query":""}]}',
+      '示例：摘要 listTotal=12，「当前页有多少条？」→ {"reply":"当前页面共 12 条数据。","actions":[{"type":"none","query":""}]}',
       '「打开请假流程」→ open_workflow；「搜索备注有吃的」→ filter_list。',
     ].join('');
 
@@ -123,11 +112,9 @@
     }
     const page = pageSummary && typeof pageSummary === 'object' ? pageSummary : null;
     const parts = [`用户本轮说：${String(utterance || '').trim()}`];
-    if (page && looksLikePageOp(utterance)) {
+    if (page) {
       parts.push(`当前页面摘要：${JSON.stringify(page)}`);
-      if (looksLikePageQuestion(utterance)) {
-        parts.push('请根据页面摘要回答用户问题，reply 必须包含具体答案。');
-      }
+      parts.push('请你自行判断：回答问题、打开页面、还是当前页搜索；reply 要有实质内容。');
     }
     if (prior.length) parts.push('请务必结合上面的最近对话作答。');
     messages.push({ role: 'user', content: parts.join('\n') });

@@ -92,80 +92,29 @@ it('对话动作清洗：多步 actions 保持顺序', () => {
   assert.equal(chat.actions[1].query, '通用流程');
 });
 
-it('对话动作清洗：打开待办时按原话补筛选步', () => {
-  const chat = sanitizeChatAction(
-    {
-      reply: '好的',
-      action: { type: 'open_todo', query: '我的待办' },
-    },
-    '打开我的待办页面筛选通用流程的数据',
-  );
-  assert.deepEqual(chat.actions.map((item) => [item.type, item.query]), [
-    ['open_todo', '我的待办'],
-    ['filter_list', '通用流程'],
-  ]);
-});
-
-it('对话动作清洗：问待办有多少条不跳页', () => {
-  const chat = sanitizeChatAction(
-    {
-      reply: '我在，你可以继续说。',
-      actions: [{ type: 'open_todo', query: '我的待办' }],
-    },
-    '我的待办页面有多少条数据？',
-  );
-  assert.deepEqual(chat.actions.map((item) => item.type), ['none']);
-});
-
-it('对话动作清洗：当前页有多少条不打开待办', () => {
-  const chat = sanitizeChatAction(
-    {
-      reply: '',
-      actions: [{ type: 'open_todo', query: '我的待办' }],
-    },
-    '当前页面有多少条数据？',
-  );
+it('对话动作清洗：原样保留模型给出的动作（不做关键字改写）', () => {
+  const chat = sanitizeChatAction({
+    reply: '当前页面共 12 条。',
+    actions: [{ type: 'none', query: '' }],
+  });
+  assert.equal(chat.reply, '当前页面共 12 条。');
   assert.equal(chat.action.type, 'none');
-  assert.match(chat.reply, /没读到|页面|数据|条/);
 });
 
-it('对话动作清洗：未说打开/待办时不跳待办', () => {
-  const chat = sanitizeChatAction(
-    {
-      reply: '先开待办再搜',
-      actions: [
-        { type: 'open_todo', query: '我的待办' },
-        { type: 'filter_list', query: '吃' },
-      ],
-    },
-    '搜索备注中有吃的数据',
-  );
-  assert.deepEqual(chat.actions.map((item) => item.type), ['filter_list']);
-  assert.equal(chat.actions[0].query, '吃');
-});
+it('对话动作清洗：模型给的打开/搜索动作原样保留', () => {
+  const open = sanitizeChatAction({
+    reply: '好的',
+    actions: [{ type: 'open_menu', query: '流程定义' }],
+  });
+  assert.deepEqual(open.actions.map((item) => item.type), ['open_menu']);
 
-it('对话动作清洗：纯搜索只做当前页筛选', () => {
-  const chat = sanitizeChatAction(
-    {
-      reply: '好的',
-      actions: [{ type: 'open_menu', query: '加班' }],
-    },
-    '搜索通用流程',
-  );
-  assert.deepEqual(chat.actions.map((item) => [item.type, item.query]), [
-    ['filter_list', '通用流程'],
+  const search = sanitizeChatAction({
+    reply: '好的',
+    actions: [{ type: 'filter_list', query: '吃' }],
+  });
+  assert.deepEqual(search.actions.map((item) => [item.type, item.query]), [
+    ['filter_list', '吃'],
   ]);
-});
-
-it('对话动作清洗：打开仍可跳页', () => {
-  const chat = sanitizeChatAction(
-    {
-      reply: '好的',
-      actions: [{ type: 'open_menu', query: '流程定义' }],
-    },
-    '打开流程定义',
-  );
-  assert.deepEqual(chat.actions.map((item) => item.type), ['open_menu']);
 });
 
 it('填表映射只保留页面上的字段 label', () => {

@@ -615,26 +615,17 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     const raw = String(response.content || '').trim();
     try {
       const parsed = Intent.parseModelJson(raw);
-      return Intent.sanitizeChatAction(parsed, utterance);
+      return Intent.sanitizeChatAction(parsed);
     } catch (error) {
-      // 模型偶尔不按 JSON 回：仍当作普通闲聊回复，避免整段对话挂掉
+      // 模型偶尔不按 JSON 回：当普通文本回复，不再本地猜意图
       const plain = raw
         .replace(/^```(?:json)?\s*/i, '')
         .replace(/\s*```$/i, '')
-        .trim()
-        .replace(/^\{[\s\S]*\}$/, '')
         .trim();
-      const fallbackAsk = /[？?]|多少|几条|什么|吗|呢/.test(String(utterance || ''));
-      return Intent.sanitizeChatAction(
-        {
-          reply: plain
-            || (fallbackAsk
-              ? '我暂时没解析出模型回答，请再问一次当前页有多少条。'
-              : '嗯，我在。请再说具体一点，或说「打开某某」「搜索某某」。'),
-          actions: [{ type: 'none', query: '' }],
-        },
-        utterance,
-      );
+      return Intent.sanitizeChatAction({
+        reply: plain || '模型返回格式异常，请再说一次。',
+        actions: [{ type: 'none', query: '' }],
+      });
     }
   }
 
@@ -1056,32 +1047,6 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     };
   }
 
-  /** 问「有多少条」时优先用 DOM 读数，避免模型敷衍 */
-  function tryAnswerPageDataQuestion(utterance, pageSummary) {
-    const text = String(utterance || '');
-    if (!/(多少|几条|有多少|多少条|几条数据)/.test(text)) return null;
-    const page = pageSummary && typeof pageSummary === 'object' ? pageSummary : {};
-    if (page.listTotal != null && Number.isFinite(Number(page.listTotal))) {
-      return `当前页面共 ${page.listTotal} 条数据。`;
-    }
-    if (page.paginationText && /共\s*[0-9]/.test(String(page.paginationText))) {
-      return `根据页面分页：${page.paginationText}`;
-    }
-    if (page.visibleRowCount != null && Number(page.visibleRowCount) > 0) {
-      return `当前列表可见 ${page.visibleRowCount} 行（若有分页，总数以页面「共 N 条」为准）。`;
-    }
-    if (page.visibleRowCount === 0) {
-      return '当前列表没有可见数据行（可能暂无数据，或列表尚未加载完）。';
-    }
-    return null;
-  }
-
-  function isWeakChatReply(reply) {
-    const text = String(reply || '').trim();
-    if (!text) return true;
-    return /^(我在[，,]?你可以继续说|嗯[，,]?我在|好的[。.!！]?|请再说清楚一点)/.test(text);
-  }
-
   function stepLooksFailed(result) {
     if (!result) return true;
     return result.status === 'error' || result.status === 'none' || result.status === 'disabled';
@@ -1195,84 +1160,13 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     return lines.join('\n');
   }
 
-  function saidOpenOrEnter(text) {
-    return Intent.saidOpenOrEnter
-      ? Intent.saidOpenOrEnter(text)
-      : /打开|进入|发起|新建|帮我开|(?:^|[，,。；;])去/.test(String(text || ''));
-  }
-
-  function wantsOpenTodo(text) {
-    return Intent.wantsOpenTodo
-      ? Intent.wantsOpenTodo(text)
-      : /打开|进入/.test(String(text || '')) && /待办/.test(String(text || ''));
-  }
-
-  function filterActionableSteps(utterance, actions) {
-    const canOpenTodo = wantsOpenTodo(utterance);
-    const canJump = saidOpenOrEnter(utterance);
-    return (actions || []).filter((item) => {
-      if (!item || !item.type || item.type === 'none') return false;
-      if (item.type === 'open_todo' && !canOpenTodo) return false;
-      if ((item.type === 'open_menu' || item.type === 'open_workflow') && !canJump) return false;
-      return true;
-    });
-  }
-
-  /** AI 没给出动作时，按原话做本地打开（流程/菜单/待办/请假） */
-  async function tryLocalOpenFromUtterance(utterance, settings) {
-    const text = String(utterance || '').replace(/\s+/g, '');
-    if (!text) return null;
-    if (!saidOpenOrEnter(text) && !wantsOpenTodo(text)) return null;
-
-    if (Leave.looksLikeLeaveTask(utterance)) {
-      return runLeaveAgent(utterance);
-    }
-    if (wantsOpenTodo(text)) {
-      return executeChatAction({ type: 'open_todo', query: '我的待办' }, utterance);
-    }
-
-    const scope = Intent.detectScope(utterance, settings || {});
-    if (scope === 'menu' || /菜单|模块|页面|导航|流程定义/.test(text)) {
-      const hits = matchMenusLocally(utterance);
-      if (hits.length === 1) {
-        const opened = await openCandidate(hits[0]);
-        return { ...opened, choices: [] };
-      }
-      if (hits.length > 1) {
-        return {
-          status: 'choose',
-          message: formatChooseMessage({ candidates: hits }),
-          choices: hits,
-        };
-      }
-    }
-
-    if (scope === 'workflow' || /流程|打开|发起|新建|填写/.test(text)) {
-      const opened = await openWorkflowByUtterance(utterance);
-      if (opened && opened.status !== 'none') {
-        return { ...opened, choices: opened.choices || opened.matches || [] };
-      }
-      // 流程表可能还没加载：再试菜单
-      const menuHits = matchMenusLocally(utterance);
-      if (menuHits.length === 1) {
-        const openedMenu = await openCandidate(menuHits[0]);
-        return { ...openedMenu, choices: [] };
-      }
-      if (menuHits.length > 1) {
-        return {
-          status: 'choose',
-          message: formatChooseMessage({ candidates: menuHits }),
-          choices: menuHits,
-        };
-      }
-      return { ...opened, choices: opened.matches || [] };
-    }
-    return null;
+  function filterActionableSteps(actions) {
+    return (actions || []).filter((item) => item && item.type && item.type !== 'none');
   }
 
   /**
-   * 对话框主路径：始终先走扩展 DeepSeek 多轮对话（带 history），保证有上下文。
-   * Nest 仅在需要真正执行步骤时用来落库拿 runId，不再抢对话主导权。
+   * 对话框主路径：DeepSeek 判断意图与动作；本地只采集页面摘要并执行。
+   * Nest 仅在对话失败时兜底，或有可执行步骤时落库拿 runId。
    */
   async function planAndRunUtterance(utterance, options) {
     let reply = '';
@@ -1281,7 +1175,6 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     let plannedVia = 'extension';
     const history = options && Array.isArray(options.history) ? options.history : [];
     const pageSummary = collectPageSummary();
-    const localPageAnswer = tryAnswerPageDataQuestion(utterance, pageSummary);
 
     let chatOk = false;
     let chatError = '';
@@ -1297,7 +1190,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       actions = [];
     }
 
-    // 扩展对话失败时，再退回 Nest 规划（同样带 history）
+    // 扩展对话失败时，再退回 Nest 规划（同样带 history + 页面摘要）
     if (!chatOk && Habits) {
       try {
         const planned = await Habits.planTask(utterance, { history, pageSummary });
@@ -1314,24 +1207,13 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
           } else {
             actions = [];
           }
+          chatOk = true;
         }
       } catch (error) {
         if (!reply) {
           const nestMsg = error && error.message ? String(error.message) : '规划失败';
           throw new Error(chatError ? `${chatError}；Nest：${nestMsg}` : nestMsg);
         }
-      }
-    }
-
-    // 页面条数：DOM 能读到就用本地答案，避免模型空回或误跳页
-    if (localPageAnswer) {
-      reply = isWeakChatReply(reply) ? localPageAnswer : reply;
-      if (!/打开|进入|发起|新建/.test(String(utterance || ''))) {
-        actions = [{ type: 'none', query: '' }];
-      }
-      if (!chatOk) {
-        chatOk = true;
-        plannedVia = `${plannedVia}+page`;
       }
     }
 
@@ -1342,27 +1224,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       );
     }
 
-    let actionable = filterActionableSteps(utterance, actions);
-
-    // 模型只回了话、没给打开动作时：本地按关键字补开流程/菜单（必须明确打开/进入）
-    if (!actionable.length && (saidOpenOrEnter(utterance) || wantsOpenTodo(utterance))) {
-      const settings = await loadAiSettings();
-      const local = await tryLocalOpenFromUtterance(utterance, settings);
-      if (local) {
-        return {
-          ...local,
-          message: local.message
-            ? `助手：${reply || '好的。'}\n\n执行：\n1. ${local.message}`
-            : `助手：${reply || local.message || '好的。'}`,
-          reply: reply || local.message || '好的。',
-          action: { type: 'none', query: '' },
-          actions: [],
-          plannedVia: `${plannedVia}+local`,
-          choices: local.choices || [],
-          runId: runId || null,
-        };
-      }
-    }
+    const actionable = filterActionableSteps(actions);
 
     if (!actionable.length) {
       return {
