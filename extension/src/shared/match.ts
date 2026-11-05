@@ -87,6 +87,104 @@
     return Number(row.DisableStatus) === 1;
   }
 
+  const MENU_FILLERS = ['打开', '进入', '发起', '新建', '帮忙', '帮我', '我想', '想要', '我要', '一下', '这个', '菜单', '模块', '页面', '导航', '去'];
+
+  function stripMenuFillers(text) {
+    let value = String(text || '').replace(/\s+/g, '').replace(/[，,。！？、；：""''（）()]/g, '');
+    let changed = true;
+    while (changed && value) {
+      changed = false;
+      if (value.startsWith('请')) {
+        value = value.slice(1);
+        changed = true;
+        continue;
+      }
+      for (const filler of MENU_FILLERS) {
+        if (value.startsWith(filler)) {
+          value = value.slice(filler.length);
+          changed = true;
+          break;
+        }
+        if (value.endsWith(filler) && value.length > filler.length) {
+          value = value.slice(0, -filler.length);
+          changed = true;
+          break;
+        }
+      }
+    }
+    return value;
+  }
+
+  function scoreMenuHit(query, title, pathText) {
+    const q = normalizeText(query);
+    const t = normalizeText(title);
+    const p = normalizeText(pathText || '');
+    if (!q || !t) return 0;
+    if (t === q) return 100;
+    if (t.startsWith(q) || q.startsWith(t)) return 92;
+    if (t.includes(q)) return 84;
+    if (q.includes(t) && t.length >= 2) return 76;
+    if (p.includes(q)) return 68;
+    // 顺序子序列：请假 ≈ 请假申请 / 人事请假
+    let qi = 0;
+    for (let i = 0; i < t.length && qi < q.length; i += 1) {
+      if (t[i] === q[qi]) qi += 1;
+    }
+    if (qi === q.length && q.length >= 2) return 58;
+    // 共享字数
+    const setT = new Set(t.split(''));
+    let shared = 0;
+    for (const ch of q) {
+      if (setT.has(ch)) shared += 1;
+    }
+    if (q.length >= 2 && shared / q.length >= 0.7) return Math.round(40 + 20 * (shared / q.length));
+    return 0;
+  }
+
+  /** 模糊匹配菜单：不知道在哪个目录下也能按名称搜 */
+  function matchMenus(utterance, menus) {
+    const list = Array.isArray(menus) ? menus : [];
+    const query = stripMenuFillers(utterance);
+    const names = list.map((item) => String(item.title || '')).filter(Boolean);
+    if (!query) {
+      return { status: 'ask', matches: [], names };
+    }
+    const scored = [];
+    for (const item of list) {
+      const title = String(item.title || '');
+      const pathText = Array.isArray(item.path)
+        ? item.path.join('/')
+        : String(item.subtitle || item.pathText || '');
+      const score = scoreMenuHit(query, title, pathText);
+      if (score <= 0) continue;
+      scored.push({ item, score });
+    }
+    scored.sort((a, b) => b.score - a.score || String(a.item.title).length - String(b.item.title).length);
+    const top = scored.filter((row) => row.score >= 40).slice(0, 12);
+    if (!top.length) return { status: 'none', matches: [], names };
+    const best = top[0];
+    const close = top.filter((row) => row.score >= best.score - 12);
+    // 唯一高分，或明显领先第二名
+    if (
+      close.length === 1
+      || (top.length > 1 && best.score >= 76 && best.score - top[1].score >= 16)
+      || (best.score >= 92 && close.every((row) => row.item.title === best.item.title))
+    ) {
+      return { status: 'open', matches: [best.item], names };
+    }
+    // 去重标题后给用户选
+    const seen = new Set();
+    const matches = [];
+    for (const row of close) {
+      const key = String(row.item.id || row.item.title);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      matches.push(row.item);
+    }
+    if (matches.length === 1) return { status: 'open', matches, names };
+    return { status: 'choose', matches, names };
+  }
+
   function matchWorkflows(utterance, rows) {
     const list = Array.isArray(rows) ? rows : [];
     const names = list.map((row) => String(row.name || '')).filter(Boolean);
@@ -207,6 +305,9 @@
   }
 export {buildCandidates,
     matchWorkflows,
+    matchMenus,
+    stripMenuFillers,
+    scoreMenuHit,
     selectSolution,
     solutionId,
     projectRows,

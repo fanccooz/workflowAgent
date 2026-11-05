@@ -232,27 +232,92 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     return result.message || '没有完成打开。';
   }
 
+  function menuNodeTitle(node) {
+    if (!node) return '';
+    const aria = String(node.getAttribute('aria-label') || node.getAttribute('title') || '').trim();
+    const text = (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+    const title = text || aria;
+    return title.length > 48 ? title.slice(0, 48) : title;
+  }
+
+  function menuParentPath(node) {
+    const path = [];
+    let cur = node && node.parentElement;
+    while (cur) {
+      if (cur.classList && cur.classList.contains('el-submenu')) {
+        const titleEl = cur.querySelector(':scope > .el-submenu__title');
+        const title = menuNodeTitle(titleEl);
+        if (title) path.unshift(title);
+      }
+      cur = cur.parentElement;
+      if (path.length >= 6) break;
+    }
+    return path;
+  }
+
+  function isSidebarMenuRoot(node) {
+    return Boolean(
+      node
+      && node.closest
+      && node.closest('.el-aside, .sidebar, .layout-sider, .left-menu, .el-menu, [class*="side"]'),
+    );
+  }
+
+  /** 采集侧栏菜单（含嵌套路径），供模糊搜索；不要求用户知道在哪个目录下 */
   function collectMenus() {
     const seen = new Set();
     const items = [];
-    const nodes = [
-      ...document.querySelectorAll('.el-menu-item, .el-submenu__title, [role="menuitem"], .sidebar a, .el-tabs__item'),
-    ];
-    for (const node of nodes) {
-      const title = (node.innerText || '').replace(/\s+/g, ' ').trim();
-      if (!title || title.length > 40) continue;
-      if (seen.has(title)) continue;
-      seen.add(title);
+    const pushItem = (node, kind) => {
+      if (!node || !isSidebarMenuRoot(node)) return;
+      const title = menuNodeTitle(node);
+      if (!title || title.length < 1) return;
+      const path = menuParentPath(node);
+      const pathKey = path.join('/');
+      const key = `${kind}:${pathKey}:${title}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const href = node.getAttribute('href') || (node.closest && node.closest('a') && node.closest('a').getAttribute('href')) || '';
       items.push({
         type: 'menu',
-        id: `menu:${title}`,
+        id: `menu:${key}`,
         title,
-        subtitle: node.getAttribute('href') || '',
+        subtitle: pathKey ? `${pathKey} / ${title}` : (href || title),
+        path,
+        kind,
+        href: href || '',
+        openable: kind === 'item' || kind === 'link',
+      });
+    };
+
+    const roots = [
+      ...document.querySelectorAll('.el-aside, .sidebar, .layout-sider, .left-menu'),
+    ];
+    const scope = roots.length ? roots : [document];
+    for (const root of scope) {
+      root.querySelectorAll('.el-menu-item').forEach((node) => pushItem(node, 'item'));
+      root.querySelectorAll('.el-submenu__title').forEach((node) => pushItem(node, 'submenu'));
+      root.querySelectorAll('a[href], [role="menuitem"]').forEach((node) => {
+        if (node.classList && (node.classList.contains('el-menu-item') || node.classList.contains('el-submenu__title'))) return;
+        pushItem(node, 'link');
+      });
+    }
+    // 顶栏/页签作补充（无侧栏路径）
+    document.querySelectorAll('.el-tabs__item').forEach((node) => {
+      const title = menuNodeTitle(node);
+      if (!title || seen.has(`tab:${title}`)) return;
+      seen.add(`tab:${title}`);
+      items.push({
+        type: 'menu',
+        id: `menu:tab:${title}`,
+        title,
+        subtitle: `页签 / ${title}`,
+        path: ['页签'],
+        kind: 'tab',
+        href: '',
         openable: true,
       });
-      if (items.length >= 80) break;
-    }
-    return items;
+    });
+    return items.slice(0, 200);
   }
 
   function collectTodos() {
@@ -375,14 +440,71 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     return openWorkflowRow(result.matches[0]);
   }
 
-  function clickMenuByTitle(title) {
-    const nodes = [
-      ...document.querySelectorAll('.el-menu-item, .el-submenu__title, [role="menuitem"], .sidebar a, .el-tabs__item'),
+  function findMenuNodeByTitle(title, preferKind) {
+    const want = String(title || '').replace(/\s+/g, ' ').trim();
+    if (!want) return null;
+    const selectors = [
+      '.el-menu-item',
+      '.el-submenu__title',
+      '[role="menuitem"]',
+      '.sidebar a',
+      '.el-aside a',
+      '.el-tabs__item',
     ];
-    const target = nodes.find((node) => (node.innerText || '').replace(/\s+/g, ' ').trim() === title);
+    const nodes = [...document.querySelectorAll(selectors.join(', '))];
+    const matches = nodes.filter((node) => menuNodeTitle(node) === want);
+    if (!matches.length) return null;
+    if (preferKind === 'item') {
+      const leaf = matches.find((node) => node.classList && node.classList.contains('el-menu-item'));
+      if (leaf) return leaf;
+    }
+    if (preferKind === 'submenu') {
+      const sub = matches.find((node) => node.classList && node.classList.contains('el-submenu__title'));
+      if (sub) return sub;
+    }
+    return matches[0];
+  }
+
+  function clickMenuByTitle(title) {
+    const target = findMenuNodeByTitle(title, 'item') || findMenuNodeByTitle(title);
     if (!target) return false;
     target.click();
     return true;
+  }
+
+  async function expandMenuPath(path) {
+    const parents = Array.isArray(path) ? path : [];
+    for (const parentTitle of parents) {
+      const node = findMenuNodeByTitle(parentTitle, 'submenu') || findMenuNodeByTitle(parentTitle);
+      if (!node) continue;
+      const submenu = node.closest && node.closest('.el-submenu');
+      const opened = submenu && submenu.classList && submenu.classList.contains('is-opened');
+      if (!opened) {
+        (node.classList && node.classList.contains('el-submenu__title') ? node : submenu && submenu.querySelector('.el-submenu__title') || node).click();
+        await delay(120);
+      }
+    }
+  }
+
+  async function openMenuCandidate(item) {
+    if (!item) return { status: 'error', message: '没有可打开的菜单。' };
+    const title = item.title;
+    const path = Array.isArray(item.path) ? item.path : [];
+    await expandMenuPath(path);
+    const prefer = item.kind === 'submenu' ? 'submenu' : 'item';
+    let target = findMenuNodeByTitle(title, prefer) || findMenuNodeByTitle(title);
+    // 路径展开后再找一次：有时叶子在折叠时不在可点状态
+    if (!target && path.length) {
+      await expandMenuPath(path);
+      target = findMenuNodeByTitle(title, prefer) || findMenuNodeByTitle(title);
+    }
+    if (!target) {
+      return { status: 'error', message: `没有点到菜单「${title}」。` };
+    }
+    target.click();
+    await delay(200);
+    const where = path.length ? `${path.join(' / ')} / ${title}` : title;
+    return { status: 'open', message: `已打开菜单「${where}」。` };
   }
 
   async function openCandidate(item) {
@@ -397,10 +519,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       });
     }
     if (item.type === 'menu') {
-      const ok = clickMenuByTitle(item.title);
-      return ok
-        ? { status: 'open', message: `已打开菜单「${item.title}」。` }
-        : { status: 'error', message: `没有点到菜单「${item.title}」。` };
+      return openMenuCandidate(item);
     }
     if (item.type === 'todo') {
       if (item.id === 'todo:entry') {
@@ -453,12 +572,56 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
 
   function matchMenusLocally(utterance) {
     const menus = collectMenus();
-    const text = String(utterance || '').replace(/\s+/g, '');
-    const hits = menus.filter((item) => {
-      const title = String(item.title || '').replace(/\s+/g, '');
-      return title && (text.includes(title) || title.includes(text.replace(/菜单|进入|模块|页面|导航|打开/g, '')));
-    });
-    return hits;
+    const result = Match.matchMenus(utterance, menus);
+    if (result.status === 'open' || result.status === 'choose') {
+      return result.matches || [];
+    }
+    return [];
+  }
+
+  async function openMenuByUtterance(utterance) {
+    const menus = collectMenus();
+    const result = Match.matchMenus(utterance, menus);
+    if (result.status === 'open' && result.matches[0]) {
+      return openMenuCandidate(result.matches[0]);
+    }
+    if (result.status === 'choose' && result.matches.length) {
+      return {
+        status: 'choose',
+        message: formatChooseMessage({ candidates: result.matches }),
+        choices: result.matches,
+      };
+    }
+    // 本地模糊没命中：交给 DeepSeek 在全量菜单里选
+    try {
+      const settings = await loadAiSettings();
+      if (settings && settings.enabled && settings.hasKey && menus.length) {
+        const decision = await askDeepSeek(utterance, 'menu', menus.slice(0, 80));
+        if (decision.decision === 'open') {
+          const hit = Intent.findById(menus, decision.id) || menus.find((m) => m.title === decision.title);
+          if (hit) return openMenuCandidate(hit);
+        }
+        if (decision.decision === 'choose' && decision.candidates && decision.candidates.length) {
+          const choices = decision.candidates
+            .map((item) => Intent.findById(menus, item.id) || item)
+            .filter(Boolean);
+          return {
+            status: 'choose',
+            message: formatChooseMessage({ candidates: choices }),
+            choices,
+          };
+        }
+      }
+    } catch (error) {
+      // 忽略，走下面的 none
+    }
+    return {
+      status: 'none',
+      message: menus.length
+        ? `没有匹配到菜单「${String(utterance || '').trim()}」。可以说更短的名称，或从侧栏相近项里选。`
+        : '当前页面没有采集到侧栏菜单。',
+      choices: [],
+    };
   }
 
   let activeLeaveTask = null;
@@ -602,12 +765,12 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     }
   }
 
-  async function askDeepSeekChat(utterance, history, pageSummary) {
+  async function askDeepSeekChat(utterance, history, pageRaw) {
     const response = await chrome.runtime.sendMessage({
       type: MSG.aiChat,
       utterance,
       history: Array.isArray(history) ? history : [],
-      pageSummary: pageSummary || null,
+      pageSummary: pageRaw || null,
     });
     if (!response || !response.ok) {
       throw new Error((response && response.message) || '对话失败');
@@ -700,24 +863,37 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
   }
 
   async function writeFilterInput(input, key) {
-    setNativeValue(input, key);
+    const text = String(key || '');
+    try {
+      input.focus();
+      input.select?.();
+    } catch (error) {
+      // 忽略
+    }
+    // 先清空再写入，避免上次关键字残留导致「搜一次就改不了」
+    setNativeValue(input, '');
+    await delay(50);
+    setNativeValue(input, text);
     await delay(80);
-    if (valueLooksSet(readInputValue(input), key)) return true;
+    if (valueLooksSet(readInputValue(input), text)) return true;
     const vue = findVueInstance(input);
     if (vue) {
       try {
-        if (typeof vue.handleInput === 'function') vue.handleInput(key);
-        else if (typeof vue.$emit === 'function') {
-          vue.$emit('input', key);
-          vue.$emit('change', key);
+        if (typeof vue.handleInput === 'function') {
+          vue.handleInput('');
+          vue.handleInput(text);
+        } else if (typeof vue.$emit === 'function') {
+          vue.$emit('input', '');
+          vue.$emit('input', text);
+          vue.$emit('change', text);
         }
-        if (vue.value !== undefined) vue.value = key;
+        if (vue.value !== undefined) vue.value = text;
       } catch (error) {
         // 忽略组件差异
       }
       await delay(80);
     }
-    return valueLooksSet(readInputValue(input), key);
+    return valueLooksSet(readInputValue(input), text);
   }
 
   async function clickQueryNear(el) {
@@ -784,9 +960,33 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       .filter((el) => (
         isVisibleEl(el)
         && !isInSidebar(el)
-        && !el.readOnly
+        && !el.disabled
+        // 允许 readonly：Element 常把展示框标成只读，写入时会临时解开
         && !el.closest('.el-select, .el-pagination, .el-date-editor, .el-dialog')
       ));
+  }
+
+  /** 清洗筛选关键字：只要真正要搜的内容，去掉「搜索/流程编号」等杂质 */
+  function normalizeFilterKeyword(query, utterance) {
+    const utter = String(utterance || '').trim();
+    const q = String(query || '').trim();
+    const id = (utter.match(/\d{6,}/) || q.match(/\d{6,}/) || [])[0];
+    if (id) return id;
+
+    let key = q || utter;
+    key = key.replace(/^(请?(?:帮我)?(?:搜索|筛选|过滤|查找|查询))\s*/u, '');
+    key = key.replace(/\s*(搜索|筛选|查询|查找)$/u, '');
+    const labels = [
+      '流程编号', '流程单号', '单据编号', '流程名称', '流程定义名称', '流程定义',
+      '单据标题', '关键字', '关键词', '单号', '编号', '编码', '名称', '标题', '主题',
+    ];
+    for (const label of labels) {
+      if (key.startsWith(label)) {
+        key = key.slice(label.length).replace(/^[\s:：]+/, '');
+        break;
+      }
+    }
+    return key.trim() || q || utter;
   }
 
   function listMainSelects() {
@@ -893,7 +1093,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
 
   /** 通用列表筛选：不绑定待办，适用于任意已打开的列表/查询页 */
   async function applyListFilter(keyword, utterance) {
-    const key = String(keyword || '').trim();
+    const key = normalizeFilterKeyword(keyword, utterance);
     if (!key) return { status: 'error', message: '没有筛选关键字。', choices: [] };
 
     await waitForListPageReady();
@@ -925,13 +1125,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
 
     await clickQueryNear(input);
     await delay(300);
-    if (!valueLooksSet(readInputValue(input), key)) {
-      return {
-        status: 'error',
-        message: `已尝试查询，但筛选框里没有保留「${key}」，页面可能未生效。`,
-        choices: [],
-      };
-    }
+    // 部分页面查询后会清空输入框，只要写入成功就视为已触发
     const { label } = fieldContextText(input);
     const where = label ? `「${label}」` : '筛选框';
     return { status: 'open', message: `已在${where}写入「${key}」并触发查询。`, choices: [] };
@@ -956,20 +1150,9 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       return { ...opened, choices: opened.choices || opened.matches || [] };
     }
     if (type === 'open_menu') {
-      const hits = matchMenusLocally(query);
-      if (hits.length === 1) {
-        const opened = await openCandidate(hits[0]);
-        if (opened && opened.status === 'open') await waitForListPageReady(10000);
-        return { ...opened, choices: [] };
-      }
-      if (hits.length > 1) {
-        return {
-          status: 'choose',
-          message: formatChooseMessage({ candidates: hits }),
-          choices: hits,
-        };
-      }
-      return { status: 'none', message: '没有匹配到菜单。', choices: [] };
+      const opened = await openMenuByUtterance(query || utterance);
+      if (opened && opened.status === 'open') await waitForListPageReady(10000);
+      return { ...opened, choices: opened.choices || [] };
     }
     if (type === 'open_todo') {
       const opened = await openCandidate({
@@ -984,67 +1167,36 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       return { ...opened, choices: [] };
     }
     if (type === 'filter_list') {
-      return applyListFilter(query, utterance);
+      return applyListFilter(normalizeFilterKeyword(query, utterance), utterance);
     }
     return { status: 'chat', message: '', choices: [] };
   }
 
-  function collectListStats() {
-    const bodyText = String(document.body && document.body.innerText || '').replace(/\s+/g, ' ');
-    const pagEl = document.querySelector('.el-pagination, .pagination, [class*="pagination"]');
-    const paginationText = pagEl
-      ? String(pagEl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120)
-      : '';
-    const totalMatch = (paginationText || bodyText).match(/共\s*([0-9,，]+)\s*条/);
-    const listTotal = totalMatch
-      ? Number(String(totalMatch[1]).replace(/[,，]/g, ''))
-      : null;
-    const rows = [...document.querySelectorAll(
-      '.el-table__body tbody tr:not(.el-table__row--expanded), .el-table__body-wrapper tbody tr, table tbody tr',
-    )].filter((tr) => {
-      const el = tr;
-      if (!(el instanceof HTMLElement)) return false;
-      if (el.offsetParent === null && getComputedStyle(el).display === 'none') return false;
-      // 跳过空占位行
-      const text = String(el.textContent || '').replace(/\s+/g, ' ').trim();
-      return text && !/暂无数据|没有数据/.test(text);
-    });
+  /** 只采页面原文快照；摘要字段由 DeepSeek 自行设定 */
+  function collectPageRaw() {
+    const dialogs = visibleDialogs();
+    const dialogText = dialogs
+      .map((el) => String(el.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .join('\n')
+      .slice(0, 1500);
+    const visibleText = String(document.body && document.body.innerText || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 6000);
     return {
-      listTotal: Number.isFinite(listTotal) ? listTotal : null,
-      visibleRowCount: Math.min(rows.length, 500),
-      paginationText,
+      title: document.title || '',
+      url: location.href || '',
+      hash: location.hash || '',
+      path: location.pathname || '',
+      hasDialog: dialogs.length > 0,
+      dialogText: dialogText || '',
+      visibleText,
     };
   }
 
   function collectPageSummary() {
-    const labels = [...document.querySelectorAll('.el-form-item__label, label')]
-      .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
-      .filter(Boolean)
-      .slice(0, 12);
-    const crumbs = [...document.querySelectorAll('.el-breadcrumb__inner, .breadcrumb, .ant-breadcrumb')]
-      .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
-      .filter(Boolean)
-      .slice(0, 8);
-    const activeMenu = [...document.querySelectorAll('.el-menu-item.is-active, .router-link-active')]
-      .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
-      .filter(Boolean)
-      .slice(0, 4);
-    const searchInputs = [...document.querySelectorAll('input[type="text"], .el-input__inner')]
-      .map((el) => String(el.value || '').trim())
-      .filter(Boolean)
-      .slice(0, 4);
-    const listStats = collectListStats();
-    return {
-      title: document.title || '',
-      hash: location.hash || '',
-      path: location.pathname || '',
-      hasDialog: visibleDialogs().length > 0,
-      formLabels: labels,
-      breadcrumbs: crumbs,
-      activeMenu,
-      filledInputs: searchInputs,
-      ...listStats,
-    };
+    return collectPageRaw();
   }
 
   function stepLooksFailed(result) {
@@ -1174,14 +1326,19 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     let runId = null;
     let plannedVia = 'extension';
     const history = options && Array.isArray(options.history) ? options.history : [];
-    const pageSummary = collectPageSummary();
+    const pageRaw = collectPageRaw();
+    // Nest / 失败补救用：优先模型自设 summary，否则退回原文快照
+    let pageSummary = pageRaw;
 
     let chatOk = false;
     let chatError = '';
     try {
-      const chat = await askDeepSeekChat(utterance, history, pageSummary);
+      const chat = await askDeepSeekChat(utterance, history, pageRaw);
       reply = chat.reply || '';
       actions = chat.actions && chat.actions.length ? chat.actions : [chat.action];
+      if (chat.summary && typeof chat.summary === 'object') {
+        pageSummary = chat.summary;
+      }
       plannedVia = 'extension';
       chatOk = true;
     } catch (error) {
@@ -1190,10 +1347,10 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       actions = [];
     }
 
-    // 扩展对话失败时，再退回 Nest 规划（同样带 history + 页面摘要）
+    // 扩展对话失败时，再退回 Nest 规划（带 history + 页面原文）
     if (!chatOk && Habits) {
       try {
-        const planned = await Habits.planTask(utterance, { history, pageSummary });
+        const planned = await Habits.planTask(utterance, { history, pageSummary: pageRaw });
         if (planned && planned.ok) {
           reply = planned.reply || reply;
           runId = planned.runId || null;
@@ -1331,27 +1488,16 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       }
     }
 
-    // 明确打开菜单：本地能唯一对上菜单名则直接点。
+    // 菜单：模糊搜侧栏（含嵌套路径），必要时再问 DeepSeek
     if (scope === 'menu') {
-      const hits = matchMenusLocally(utterance);
-      if (hits.length === 1) {
-        const opened = await openCandidate(hits[0]);
-        return { ...opened, choices: [] };
-      }
-      if (hits.length > 1) {
-        return {
-          status: 'choose',
-          message: formatChooseMessage({ candidates: hits }),
-          choices: hits,
-        };
-      }
+      return openMenuByUtterance(utterance);
     }
 
     if (!aiReady) {
       if (scope === 'menu') {
         return {
           status: 'none',
-          message: '没有匹配到菜单。可说「进入人事模块」，或在设置里增加菜单关键字，并配置 DeepSeek。',
+          message: '没有匹配到菜单。可说短名称如「考勤」「请假」，不必知道在哪个目录。',
           choices: [],
         };
       }

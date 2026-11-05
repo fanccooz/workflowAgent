@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildCandidates,
   matchWorkflows,
+  matchMenus,
   selectSolution,
   projectRows,
   buildQuery,
@@ -108,4 +109,28 @@ it('按表头投影名称和代码', () => {
     ],
   );
   assert.equal(projected[0].code, '10022');
+});
+
+const menus = [
+  { id: 'menu:1', title: '请假调班', path: ['人事'], subtitle: '人事 / 请假调班' },
+  { id: 'menu:2', title: '考勤统计', path: ['人事', '考勤'], subtitle: '人事 / 考勤 / 考勤统计' },
+  { id: 'menu:3', title: '我的待办', path: ['流程'], subtitle: '流程 / 我的待办' },
+  { id: 'menu:4', title: '流程定义', path: ['流程', '流程管理'], subtitle: '流程 / 流程管理 / 流程定义' },
+];
+
+it('模糊菜单：不知道目录也能命中请假调班', () => {
+  const result = matchMenus('打开请假调班', menus);
+  assert.equal(result.status, 'open');
+  assert.equal(result.matches[0].title, '请假调班');
+});
+
+it('模糊菜单：短词考勤命中考勤统计', () => {
+  const result = matchMenus('进入考勤', menus);
+  assert.equal(result.status, 'open');
+  assert.equal(result.matches[0].title, '考勤统计');
+});
+
+it('模糊菜单：流程相关多项时让用户选', () => {
+  const result = matchMenus('打开流程', menus);
+  assert.ok(result.status === 'choose' || result.matches.length >= 1);
 });

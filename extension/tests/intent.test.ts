@@ -92,13 +92,15 @@ it('对话动作清洗：多步 actions 保持顺序', () => {
   assert.equal(chat.actions[1].query, '通用流程');
 });
 
-it('对话动作清洗：原样保留模型给出的动作（不做关键字改写）', () => {
+it('对话动作清洗：原样保留模型给出的动作与自设 summary', () => {
   const chat = sanitizeChatAction({
+    summary: { listCount: 12, page: '我的待办' },
     reply: '当前页面共 12 条。',
     actions: [{ type: 'none', query: '' }],
   });
   assert.equal(chat.reply, '当前页面共 12 条。');
   assert.equal(chat.action.type, 'none');
+  assert.deepEqual(chat.summary, { listCount: 12, page: '我的待办' });
 });
 
 it('对话动作清洗：模型给的打开/搜索动作原样保留', () => {

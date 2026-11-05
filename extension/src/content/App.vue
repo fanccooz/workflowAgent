@@ -487,7 +487,7 @@ function onKeydown(event: KeyboardEvent) {
           </div>
           <p class="wf-hint-top">
             <template v-if="aiReadyHint">
-              与 DeepSeek 对话即可；它会根据当前页面判断回答或办事。
+              与 DeepSeek 对话即可；页面摘要由 AI 按本轮需要自行提炼。
             </template>
             <template v-else>
               先与 DeepSeek 对话；需要办事时会自动匹配并打开。请先在设置里配置 Key（或 .env 后重新加载扩展）。

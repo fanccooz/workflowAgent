@@ -151,7 +151,7 @@
     };
   }
 
-  /** 只校验动作类型与字段，意图判断交给 DeepSeek */
+  /** 只校验动作类型；summary 由模型自设，本地原样保留 */
   function sanitizeChatAction(raw) {
     const data = raw && typeof raw === 'object' ? raw : {};
     let actions = [];
@@ -165,10 +165,14 @@
     if (!actions.length) actions = [{ type: 'none', query: '' }];
     const first = actions[0] || { type: 'none', query: '' };
     const reply = String(data.reply || data.message || '').trim();
+    const summary = data.summary && typeof data.summary === 'object' && !Array.isArray(data.summary)
+      ? data.summary
+      : null;
     return {
       reply: reply || '好的。',
       action: first,
       actions,
+      summary,
     };
   }
 

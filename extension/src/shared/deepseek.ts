@@ -88,21 +88,25 @@
     return out;
   }
 
-  function buildChatMessages(utterance, history, pageSummary) {
+  function buildChatMessages(utterance, history, pageRaw) {
     const system = [
       '你是目标信息平台里的中文助手。由你判断用户意图并决定动作，本地不会用关键字抢答。',
       '必须结合「最近对话」理解指代与追问。',
-      '你会收到「当前页面摘要」（含 listTotal、visibleRowCount、paginationText、activeMenu 等），请据此回答与办事。',
+      '你会收到「页面原文」快照（title/url/visibleText 等），字段不固定。',
+      '请你先按本轮对话需要，自行提炼 summary（字段名与内容都由你决定），再据此回答与办事。',
       '动作约定：',
-      '- none：闲聊、问答、无需操作。问「有多少条/当前页数据」时必须根据摘要直接答出数字，禁止敷衍。',
-      '- open_workflow / open_menu / open_todo：仅当用户明确要打开/进入/发起/新建某页时使用。',
-      '- filter_list：仅当用户要在当前页搜索/筛选时使用，不要因此跳页。',
-      '- leave.open_fill：用户要请假并填写时使用。',
-      '问句里提到页面名但没说打开 → 只回答，不要跳页。',
+      '- none：闲聊、或仅问答当前页信息（如有多少条）。',
+      '- open_workflow / open_menu / open_todo：用户要去某页、办某事、看某模块，或当前页办不成需要换页时，直接打开，不要说「不能打开」。',
+      '- filter_list：只在当前页搜；query 仅纯关键字，不要带「搜索/流程编号」等词。',
+      '- leave.open_fill：请假并填表。',
+      '区分：纯当前页搜索 → 只 filter_list；要换页/打开流程菜单待办 → 用对应 open_*，可再跟 filter_list。',
+      '禁止：用户明显要打开或前往某页时，用文字拒绝、劝他手动点。应当输出 open_* 动作。',
       '只输出一个 JSON 对象，不要 Markdown：',
-      '{"reply":"给用户看的话","actions":[{"type":"none|leave.open_fill|open_workflow|open_menu|open_todo|filter_list","query":"短句"}]}',
-      '示例：摘要 listTotal=12，「当前页有多少条？」→ {"reply":"当前页面共 12 条数据。","actions":[{"type":"none","query":""}]}',
-      '「打开请假流程」→ open_workflow；「搜索备注有吃的」→ filter_list。',
+      '{"summary":{任意你认为有用的键值},"reply":"给用户看的话","actions":[{"type":"none|leave.open_fill|open_workflow|open_menu|open_todo|filter_list","query":"短句"}]}',
+      '示例：「打开请假流程」→ open_workflow；「进入人事」/「打开考勤」等页面名 → open_menu（query 用短名称即可，本地会模糊搜侧栏，不必知道在哪个目录）。',
+      '「去我的待办」→ open_todo。',
+      '「搜索202610080000003」且已在列表页 → 仅 filter_list(query=202610080000003)。',
+      '当前页没有目标、需要换到待办再查 → open_todo，必要时再 filter_list。',
     ].join('');
 
     const messages = [{ role: 'system', content: system }];
@@ -110,11 +114,11 @@
     for (const item of prior) {
       messages.push(item);
     }
-    const page = pageSummary && typeof pageSummary === 'object' ? pageSummary : null;
+    const page = pageRaw && typeof pageRaw === 'object' ? pageRaw : null;
     const parts = [`用户本轮说：${String(utterance || '').trim()}`];
     if (page) {
-      parts.push(`当前页面摘要：${JSON.stringify(page)}`);
-      parts.push('请你自行判断：回答问题、打开页面、还是当前页搜索；reply 要有实质内容。');
+      parts.push(`页面原文：${JSON.stringify(page)}`);
+      parts.push('请先自设 summary，再给出 reply 与 actions；reply 要有实质内容。');
     }
     if (prior.length) parts.push('请务必结合上面的最近对话作答。');
     messages.push({ role: 'user', content: parts.join('\n') });
@@ -148,10 +152,10 @@
     ];
   }
 
-  /** 对话 + 决定动作 */
-  async function chat(settings, utterance, history, pageSummary) {
+  /** 对话 + 决定动作（pageRaw 为页面原文快照；摘要由模型在返回的 summary 里自设） */
+  async function chat(settings, utterance, history, pageRaw) {
     assertReady(settings, '对话');
-    return chatCompletions(settings, buildChatMessages(utterance, history, pageSummary), {
+    return chatCompletions(settings, buildChatMessages(utterance, history, pageRaw), {
       temperature: 0.4,
       jsonObject: true,
     });

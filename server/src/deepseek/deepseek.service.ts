@@ -123,18 +123,14 @@ export class DeepseekService {
       '必须只输出一个 JSON 对象，不要 Markdown、不要解释。',
       '格式：{"reply":"一句话说明","steps":[{"type":"...","query":"..."}]}',
       'type 只能是：open_todo、open_menu、open_workflow、filter_list、leave.open_fill。',
-      '硬性规则（违反即错）：',
+      '由你判断是否需要换页：用户要去某页、办某事，或当前页做不到时，直接给 open_*，不要说不能打开。',
       '【打开 vs 搜索】',
-      '- 打开/进入/发起/新建 = 跳转打开页面（open_workflow / open_menu / open_todo）。',
-      '- 搜索/筛选/过滤/查找 = 只在当前页面搜索（filter_list），禁止因此打开待办或其他页。',
-      '1) 说了打开/进入/发起/新建某流程 → open_workflow（请假填表 → leave.open_fill）。',
-      '2) 说了打开/进入某菜单/模块/页面 → open_menu。',
-      '3) 没说打开/进入/发起/新建 → 禁止 open_menu、open_workflow。',
-      '4) 没说「待办」→ 禁止 open_todo。',
-      '5) 只说搜索/筛选 → 只输出 filter_list，不要追问页面，不要跳页。',
+      '- 打开/进入/发起/新建/去某页 = open_workflow / open_menu / open_todo。',
+      '- 仅在当前页搜索/筛选 = filter_list（query 只要纯关键字）。',
+      '- 需要先换页再搜 = 先 open_* 再 filter_list。',
       '对照例子：',
-      '打开请假流程 → open_workflow；打开流程定义 → open_menu；进入人事 → open_menu。',
-      '搜索备注中有吃的 → 仅 filter_list(query=吃)；筛选通用流程 → 仅 filter_list。',
+      '打开请假流程 → open_workflow；进入人事 → open_menu；去我的待办 → open_todo。',
+      '搜索备注中有吃的（已在列表页）→ 仅 filter_list(query=吃)。',
       '打开我的待办再筛选通用流程 → open_todo + filter_list。',
     ].join('\n');
 
@@ -150,7 +146,8 @@ export class DeepseekService {
       content: JSON.stringify({
         utterance: String(utterance || ''),
         page,
-        instruction: '打开=跳页；搜索=当前页 filter_list。二者不要混。',
+        instruction:
+          'page 可能是页面原文或模型自设摘要，字段不固定，请自行理解。打开=跳页；搜索=当前页 filter_list。二者不要混。',
       }),
     });
 
@@ -237,17 +234,11 @@ export class DeepseekService {
     return /筛选|过滤|搜索|查找/.test(raw) && !this.saidOpenOrEnter(raw) && !this.saidTodo(raw);
   }
 
-  /** 按用户原话硬裁剪导航步骤：打开才跳页，搜索只留 filter_list */
+  /** 仅在「纯当前页搜索」时裁掉跳页；其余信任模型步骤 */
   private stripUnauthorizedNavigation(text: string, steps: PlanStep[]): PlanStep[] {
-    let list = Array.isArray(steps) ? steps.slice() : [];
+    const list = Array.isArray(steps) ? steps.slice() : [];
     if (this.saidSearchOnly(text)) {
       return list.filter((step) => step.type === 'filter_list');
-    }
-    const todo = this.saidTodo(text);
-    const openEnter = this.saidOpenOrEnter(text);
-    if (!todo) list = list.filter((step) => step.type !== 'open_todo');
-    if (!openEnter) {
-      list = list.filter((step) => step.type !== 'open_menu' && step.type !== 'open_workflow');
     }
     return list;
   }
@@ -266,8 +257,8 @@ export class DeepseekService {
     const wantsNav = this.wantsExplicitNavigation(text);
     const keyword = this.extractFilterKeyword(text);
 
-    // 只搜索：一律当前页 filter_list，不跳页、不追问
-    if (this.saidSearchOnly(text) || (wantsFilter && !wantsNav)) {
+    // 纯搜索且未要求换页：当前页 filter_list
+    if (this.saidSearchOnly(text) && !wantsNav) {
       list = list.filter((step) => step.type === 'filter_list');
       if (!list.length && keyword) list = [{ type: 'filter_list', query: keyword }];
       else if (list.length && keyword) {
