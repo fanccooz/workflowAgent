@@ -71,31 +71,47 @@
     ];
   }
 
-  function buildChatMessages(utterance, history) {
+  function normalizeHistory(history, limit = 40) {
+    const prior = Array.isArray(history) ? history : [];
+    const out = [];
+    for (const item of prior.slice(-limit)) {
+      if (!item || (item.role !== 'user' && item.role !== 'assistant')) continue;
+      const content = String(item.content || '').trim().slice(0, 800);
+      if (!content) continue;
+      out.push({ role: item.role, content });
+    }
+    return out;
+  }
+
+  function buildChatMessages(utterance, history, pageSummary) {
     const system = [
       '你是目标信息平台里的对话助手，用中文简短自然地回复。',
+      '必须结合「最近对话」理解指代与追问（那个/刚才/继续/同上/我刚才说的/他还说了什么），不要当每句都是新会话。',
       '每一轮你既要对话，也要判断要不要让前端去操作系统页面。',
       '用户一句话里若有多个要求，必须拆成多个步骤，按执行顺序全部放入 actions，不要只返回第一步。',
+      '硬性：用户没说「打开/进入/去」时禁止 open_menu、open_workflow，不要跳其他页。',
+      '硬性：用户没说「待办」时禁止 open_todo，不要进我的待办。',
+      '只搜索/筛选：已在当前页 → 仅 filter_list；否则 type=none 并追问。',
+      '闲聊、问答、澄清 → type=none，在 reply 里正常回答或追问，且要接上文。',
       '只输出一个 JSON 对象，不要 Markdown，不要解释。格式：',
       '{"reply":"给用户看的话","actions":[{"type":"none|leave.open_fill|open_workflow|open_menu|open_todo|filter_list","query":"短句"}]}',
-      '规则：闲聊、询问、信息不全 → actions 里一项 type=none，在 reply 里说明或追问。',
-      '用户要请假或发起并填写表单（含日期/事由等）→ leave.open_fill，query 建议「打开请假」。',
-      '用户只要打开某流程、不填表 → open_workflow，query 如「打开请假」或「打开出差」。',
-      '用户要进菜单/页面 → open_menu；要待办列表 → open_todo。',
-      '用户要在任意列表/查询页按关键字筛选、过滤、搜索 → filter_list，query 只写关键字；先导航再筛选。',
-      '示例：「待办里筛通用流程」→ open_todo + filter_list；「打开流程定义搜索请假」→ open_menu + filter_list。',
+      '用户要请假或发起并填写表单 → leave.open_fill。',
+      '用户明确说打开某流程 → open_workflow；明确说打开/进入某菜单 → open_menu；明确说待办 → open_todo。',
+      '示例：上文用户说名字是张三，本句「我叫什么」→ type=none，reply 回答张三；上文已在加班页「搜索备注有吃的」→ 仅 filter_list。',
       'query 要短；具体填哪些框由后续按页面字段再推理，不要把长段说明塞进 query。',
     ].join('');
 
     const messages = [{ role: 'system', content: system }];
-    const prior = Array.isArray(history) ? history : [];
-    for (const item of prior.slice(-12)) {
-      if (!item || (item.role !== 'user' && item.role !== 'assistant')) continue;
-      const content = String(item.content || '').trim();
-      if (!content) continue;
-      messages.push({ role: item.role, content });
+    const prior = normalizeHistory(history, 40);
+    for (const item of prior) {
+      messages.push(item);
     }
-    messages.push({ role: 'user', content: String(utterance || '') });
+    const page = pageSummary && typeof pageSummary === 'object' ? pageSummary : null;
+    // 当前轮：纯文本指令 + 可选页面摘要，避免盖住多轮对话语义
+    const parts = [`用户本轮说：${String(utterance || '').trim()}`];
+    if (page) parts.push(`当前页面摘要：${JSON.stringify(page)}`);
+    if (prior.length) parts.push('请务必结合上面的最近对话作答。');
+    messages.push({ role: 'user', content: parts.join('\n') });
     return messages;
   }
 
@@ -127,9 +143,9 @@
   }
 
   /** 对话 + 决定动作 */
-  async function chat(settings, utterance, history) {
+  async function chat(settings, utterance, history, pageSummary) {
     assertReady(settings, '对话');
-    return chatCompletions(settings, buildChatMessages(utterance, history));
+    return chatCompletions(settings, buildChatMessages(utterance, history, pageSummary));
   }
 
   /** 从候选里选流程/菜单/待办 */

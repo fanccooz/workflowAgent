@@ -63,5 +63,4 @@ npm test
 
 - `extension/src` — Vue/TS 源码
 - `extension/dist` — 构建产物（加载此目录）
-- `extension/legacy` — 旧版原生 JS（仅存档）
 - `server` — Nest 习惯 / 任务服务

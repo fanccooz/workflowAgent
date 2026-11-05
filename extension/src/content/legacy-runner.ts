@@ -602,11 +602,12 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     }
   }
 
-  async function askDeepSeekChat(utterance, history) {
+  async function askDeepSeekChat(utterance, history, pageSummary) {
     const response = await chrome.runtime.sendMessage({
       type: MSG.aiChat,
       utterance,
       history: Array.isArray(history) ? history : [],
+      pageSummary: pageSummary || null,
     });
     if (!response || !response.ok) {
       throw new Error((response && response.message) || '对话失败');
@@ -980,11 +981,27 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
       .filter(Boolean)
       .slice(0, 12);
+    const crumbs = [...document.querySelectorAll('.el-breadcrumb__inner, .breadcrumb, .ant-breadcrumb')]
+      .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .slice(0, 8);
+    const activeMenu = [...document.querySelectorAll('.el-menu-item.is-active, .router-link-active')]
+      .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .slice(0, 4);
+    const searchInputs = [...document.querySelectorAll('input[type="text"], .el-input__inner')]
+      .map((el) => String(el.value || '').trim())
+      .filter(Boolean)
+      .slice(0, 4);
     return {
       title: document.title || '',
       hash: location.hash || '',
+      path: location.pathname || '',
       hasDialog: visibleDialogs().length > 0,
       formLabels: labels,
+      breadcrumbs: crumbs,
+      activeMenu,
+      filledInputs: searchInputs,
     };
   }
 
@@ -996,6 +1013,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
   async function executeChatActions(actions, utterance, options) {
     const opts = options || {};
     const runId = opts.runId;
+    const history = Array.isArray(opts.history) ? opts.history : [];
     const list = Array.isArray(actions) && actions.length
       ? actions
       : [{ type: 'none', query: '' }];
@@ -1024,6 +1042,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
           seq,
           last.message || last.status,
           collectPageSummary(),
+          history,
         );
         if (advice && advice.decision === 'retry') {
           const retryAction = {
@@ -1099,51 +1118,99 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     return lines.join('\n');
   }
 
-  /** 优先 Nest DeepSeek 规划入库；失败再退回扩展内对话拆步 */
+  function filterActionableSteps(utterance, actions) {
+    const saidTodo = /待办/.test(String(utterance || ''));
+    const saidOpenEnter = /打开|进入|(?:^|[，,。；;])去/.test(String(utterance || ''));
+    return (actions || []).filter((item) => {
+      if (!item || !item.type || item.type === 'none') return false;
+      if (item.type === 'open_todo' && !saidTodo) return false;
+      if ((item.type === 'open_menu' || item.type === 'open_workflow') && !saidOpenEnter) return false;
+      return true;
+    });
+  }
+
+  /**
+   * 对话框主路径：始终先走扩展 DeepSeek 多轮对话（带 history），保证有上下文。
+   * Nest 仅在需要真正执行步骤时用来落库拿 runId，不再抢对话主导权。
+   */
   async function planAndRunUtterance(utterance, options) {
     let reply = '';
     let actions = [];
     let runId = null;
     let plannedVia = 'extension';
+    const history = options && Array.isArray(options.history) ? options.history : [];
+    const pageSummary = collectPageSummary();
 
-    if (Habits) {
+    let chatOk = false;
+    try {
+      const chat = await askDeepSeekChat(utterance, history, pageSummary);
+      reply = chat.reply || '';
+      actions = chat.actions && chat.actions.length ? chat.actions : [chat.action];
+      plannedVia = 'extension';
+      chatOk = true;
+    } catch (error) {
+      reply = '';
+      actions = [];
+    }
+
+    // 扩展对话失败时，再退回 Nest 规划（同样带 history）
+    if (!chatOk && Habits) {
       try {
-        const planned = await Habits.planTask(utterance);
-        if (planned && planned.ok && Array.isArray(planned.steps) && planned.steps.length) {
-          reply = planned.reply || '好的，已拆成步骤。';
-          runId = planned.runId;
-          actions = planned.steps.map((step) => ({
-            type: step.type,
-            query: step.query || '',
-            seq: step.seq,
-          }));
+        const planned = await Habits.planTask(utterance, { history, pageSummary });
+        if (planned && planned.ok) {
+          reply = planned.reply || reply;
+          runId = planned.runId || null;
           plannedVia = 'server';
-        } else if (planned && planned.ok && planned.runId && (!planned.steps || !planned.steps.length)) {
-          // 服务端未拆出步骤：保留 runId，继续用扩展拆步执行并回写
-          runId = planned.runId;
-          reply = planned.reply || '';
+          if (Array.isArray(planned.steps) && planned.steps.length) {
+            actions = planned.steps.map((step) => ({
+              type: step.type,
+              query: step.query || '',
+              seq: step.seq,
+            }));
+          } else {
+            actions = [];
+          }
         }
       } catch (error) {
-        // Nest 规划失败则走扩展 DeepSeek
-        reply = '';
+        if (!reply) throw error;
       }
     }
 
-    if (!actions.length) {
-      const chat = await askDeepSeekChat(utterance, options && options.history);
-      reply = chat.reply;
-      actions = chat.actions && chat.actions.length ? chat.actions : [chat.action];
-      plannedVia = 'extension';
+    const actionable = filterActionableSteps(utterance, actions);
+    if (!actionable.length) {
+      return {
+        status: 'chat',
+        message: `助手：${reply || '请再说清楚一点。'}`,
+        reply: reply || '请再说清楚一点。',
+        action: { type: 'none', query: '' },
+        actions: [],
+        plannedVia,
+        choices: [],
+        runId: runId || null,
+      };
     }
 
-    const exec = await executeChatActions(actions, utterance, { runId });
+    // 有可执行步骤时，尝试 Nest 入库拿到 runId（不覆盖前端已结合上下文的动作）
+    if (!runId && Habits) {
+      try {
+        const planned = await Habits.planTask(utterance, { history, pageSummary });
+        if (planned && planned.ok && planned.runId) {
+          runId = planned.runId;
+          plannedVia = 'extension+server';
+        }
+      } catch (error) {
+        // 落库失败不影响执行
+      }
+    }
+
+    const exec = await executeChatActions(actionable, utterance, { runId, history });
     return {
       ...exec,
       status: exec.status === 'chat' ? 'chat' : exec.status,
       message: formatChatResult(reply, exec),
       reply,
-      action: actions[0] || { type: 'none', query: '' },
-      actions,
+      action: actionable[0] || { type: 'none', query: '' },
+      actions: actionable,
       plannedVia,
       choices: exec.choices || [],
       requiredReady: exec.requiredReady,

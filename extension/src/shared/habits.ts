@@ -152,17 +152,30 @@
     }
   }
 
-  /** DeepSeek 拆步并落库 */
-  async function planTask(utterance) {
+  /** DeepSeek 拆步并落库（可带对话历史与页面摘要） */
+  async function planTask(utterance, options) {
     const userId = await resolveWaromUserId();
     if (!userId) {
       return { ok: false, skipped: true, reason: 'no-user', message: '未识别到工号，请到设置里填写' };
     }
+    const opts = options || {};
+    const history = Array.isArray(opts.history)
+      ? opts.history
+          .filter((item) => item && (item.role === 'user' || item.role === 'assistant'))
+          .slice(-40)
+          .map((item) => ({
+            role: item.role,
+            content: String(item.content || '').trim().slice(0, 800),
+          }))
+          .filter((item) => item.content)
+      : [];
     const data = await apiFetch('/api/tasks/plan', {
       method: 'POST',
       body: JSON.stringify({
         waromUserId: userId,
         utterance: String(utterance || '').trim().slice(0, 2000),
+        history,
+        pageSummary: opts.pageSummary && typeof opts.pageSummary === 'object' ? opts.pageSummary : undefined,
       }),
     });
     return {
@@ -202,14 +215,25 @@
   }
 
   /** 步骤失败后再问 DeepSeek */
-  async function actOnFailedStep(runId, seq, lastError, pageSummary) {
+  async function actOnFailedStep(runId, seq, lastError, pageSummary, history) {
     if (!runId || seq == null) return null;
     try {
+      const prior = Array.isArray(history)
+        ? history
+            .filter((item) => item && (item.role === 'user' || item.role === 'assistant'))
+            .slice(-20)
+            .map((item) => ({
+              role: item.role,
+              content: String(item.content || '').trim().slice(0, 800),
+            }))
+            .filter((item) => item.content)
+        : [];
       return await apiFetch(`/api/tasks/${runId}/steps/${seq}/act`, {
         method: 'POST',
         body: JSON.stringify({
           lastError: String(lastError || '').slice(0, 1000),
           pageSummary: pageSummary || {},
+          history: prior,
         }),
       });
     } catch (error) {

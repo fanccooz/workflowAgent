@@ -46,7 +46,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === MSG.aiChat) {
     loadSettings()
-      .then((settings) => DeepSeek.chat(settings, message.utterance, message.history))
+      .then((settings) =>
+        DeepSeek.chat(settings, message.utterance, message.history, message.pageSummary),
+      )
       .then((content) => sendResponse({ ok: true, content }))
       .catch((error: Error) => sendResponse({ ok: false, message: error.message || '对话失败' }));
     return true;

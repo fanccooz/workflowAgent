@@ -57,6 +57,82 @@
   font-size: 13px;
   line-height: 1.5;
 }
+.wf-suggest {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #eef4ff;
+  border: 1px solid #d6e4ff;
+}
+.wf-suggest-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #3b4f76;
+}
+.wf-suggest-clear {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #61769b;
+  font: 12px inherit;
+  cursor: pointer;
+}
+.wf-suggest-clear:hover {
+  color: #243b53;
+}
+.wf-suggest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wf-suggest-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 7px 8px;
+  border: 1px solid #c9d8f5;
+  border-radius: 8px;
+  background: #fff;
+  color: #243b53;
+  font: 13px / 1.4 inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.wf-suggest-item:hover {
+  border-color: #2457d6;
+}
+.wf-suggest-item:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.wf-suggest-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-suggest-dismiss {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #e4e7eb;
+  color: #52606d;
+  font: 14px / 18px inherit;
+  text-align: center;
+  cursor: pointer;
+}
+.wf-suggest-dismiss:hover {
+  background: #cbd2d9;
+  color: #243b53;
+}
 .wf-log {
   min-height: 96px;
   max-height: 220px;

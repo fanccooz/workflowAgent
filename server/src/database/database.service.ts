@@ -120,6 +120,19 @@ export class DatabaseService implements OnModuleInit {
       .all(waromUserId, limit) as unknown as ChatEventRow[];
   }
 
+  /** 最近对话（含 user/assistant），按时间正序返回，便于拼进模型上下文 */
+  listRecentChatEvents(waromUserId: string, limit: number): ChatEventRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM chat_events
+         WHERE warom_user_id = ?
+         ORDER BY id DESC
+         LIMIT ?`,
+      )
+      .all(waromUserId, limit) as unknown as ChatEventRow[];
+    return rows.slice().reverse();
+  }
+
   latestUserEventId(waromUserId: string): number | null {
     const row = this.db
       .prepare(

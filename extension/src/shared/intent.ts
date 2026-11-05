@@ -151,15 +151,34 @@
     };
   }
 
+  function saidTodo(text) {
+    return /待办/.test(String(text || ''));
+  }
+
+  function saidOpenOrEnter(text) {
+    return /打开|进入|(?:^|[，,。；;])去/.test(String(text || ''));
+  }
+
+  function stripUnauthorizedNavigation(text, actions) {
+    let list = Array.isArray(actions) ? actions.slice() : [];
+    if (!text) return list;
+    if (!saidTodo(text)) list = list.filter((item) => item.type !== 'open_todo');
+    if (!saidOpenOrEnter(text)) {
+      list = list.filter((item) => item.type !== 'open_menu' && item.type !== 'open_workflow');
+    }
+    return list;
+  }
+
   /** 从用户原话补全「导航 + 筛选」等多步（任意列表页，不限待办） */
   function inferFilterFollowUp(utterance, actions) {
     const text = String(utterance || '').replace(/\s+/g, '');
-    const list = Array.isArray(actions) ? actions.slice() : [];
+    let list = stripUnauthorizedNavigation(text, actions);
     if (list.some((item) => item.type === 'filter_list')) return list;
     if (!/筛选|过滤|按.+查|查出|查找|搜索/.test(text)) return list;
 
     let keyword = '';
     const patterns = [
+      /备注[为是:：]?\s*([^，,。；;有中的数据]+)/,
       /筛选([^的数据页面列表]+)/,
       /过滤([^的数据页面列表]+)/,
       /搜索([^的数据页面列表]+)/,
@@ -170,7 +189,7 @@
     for (const pattern of patterns) {
       const hit = text.match(pattern);
       if (hit && hit[1]) {
-        keyword = hit[1].replace(/^(页面|列表|数据|有关|相关)/, '').trim();
+        keyword = hit[1].replace(/^(页面|列表|数据|有关|相关|备注[为是:：]?|中有|里有)/, '').trim();
         if (keyword) break;
       }
     }
@@ -178,15 +197,22 @@
 
     const usable = list.filter((item) => item.type !== 'none');
     const hasNav = usable.some((item) => ['open_todo', 'open_menu', 'open_workflow'].includes(item.type));
-    if (!hasNav) {
-      if (/待办/.test(text)) usable.push({ type: 'open_todo', query: '我的待办' });
-      else {
+    const wantsNav = saidTodo(text) || saidOpenOrEnter(text);
+    if (!hasNav && wantsNav) {
+      if (saidTodo(text)) usable.push({ type: 'open_todo', query: '我的待办' });
+      else if (saidOpenOrEnter(text)) {
         const menuHit = text.match(/(?:打开|进入|去)([^，,。筛选过滤搜索查询页面列表]{2,16})(?:页面|列表|模块|菜单)?/);
-        if (menuHit && menuHit[1]) usable.push({ type: 'open_menu', query: menuHit[1] });
+        if (menuHit && menuHit[1] && !/待办/.test(menuHit[1])) {
+          usable.push({ type: 'open_menu', query: menuHit[1] });
+        }
       }
     }
+    // 没说打开/进入/待办：不补导航，交给追问
+    if (!hasNav && !wantsNav && !usable.length) {
+      return [{ type: 'none', query: '' }];
+    }
     usable.push({ type: 'filter_list', query: keyword });
-    return usable;
+    return stripUnauthorizedNavigation(text, usable);
   }
 
   function sanitizeChatAction(raw, utterance) {
@@ -201,8 +227,12 @@
     }
     actions = inferFilterFollowUp(utterance || '', actions);
     const first = actions[0] || { type: 'none', query: '' };
+    let reply = String(data.reply || data.message || '').trim();
+    if (first.type === 'none' && !reply) {
+      reply = '请先说明在哪个页面操作。若要换页请说「打开/进入某某」；要进待办请明确说「待办」。';
+    }
     return {
-      reply: String(data.reply || data.message || '').trim() || '好的。',
+      reply: reply || '好的。',
       action: first,
       actions,
     };

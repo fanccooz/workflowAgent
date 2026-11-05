@@ -9,13 +9,31 @@ export class TasksService {
     private readonly deepseek: DeepseekService,
   ) {}
 
-  async plan(waromUserId: string, utterance: string) {
+  async plan(
+    waromUserId: string,
+    utterance: string,
+    options?: {
+      history?: Array<{ role?: string; content?: string }>;
+      pageSummary?: Record<string, unknown>;
+    },
+  ) {
     const userId = String(waromUserId || '').trim();
     const text = String(utterance || '').trim();
     if (!userId) throw new BadRequestException('缺少 waromUserId');
     if (!text) throw new BadRequestException('缺少 utterance');
 
-    const planned = await this.deepseek.planTaskSteps(text);
+    let history = Array.isArray(options?.history) ? options!.history! : [];
+    if (!history.length) {
+      history = this.db.listRecentChatEvents(userId, 40).map((row) => ({
+        role: row.role,
+        content: row.content,
+      }));
+    }
+
+    const planned = await this.deepseek.planTaskSteps(text, {
+      history,
+      pageSummary: options?.pageSummary,
+    });
     const run = this.db.createTaskRun(userId, text, planned.reply);
     const steps = this.db.insertTaskSteps(
       run.id,
@@ -103,7 +121,11 @@ export class TasksService {
   async act(
     runId: number,
     seq: number,
-    body: { lastError?: string; pageSummary?: Record<string, unknown> },
+    body: {
+      lastError?: string;
+      pageSummary?: Record<string, unknown>;
+      history?: Array<{ role?: string; content?: string }>;
+    },
   ) {
     const run = this.db.getTaskRun(runId);
     if (!run) throw new NotFoundException('任务不存在');
@@ -111,11 +133,20 @@ export class TasksService {
     const step = steps.find((item) => item.seq === seq);
     if (!step) throw new NotFoundException('步骤不存在');
 
+    let history = Array.isArray(body?.history) ? body.history : [];
+    if (!history.length) {
+      history = this.db.listRecentChatEvents(run.warom_user_id, 20).map((row) => ({
+        role: row.role,
+        content: row.content,
+      }));
+    }
+
     const advice = await this.deepseek.actOnStepFailure({
       utterance: run.utterance,
       step: { type: step.type, query: step.query, seq: step.seq },
       lastError: String(body?.lastError || step.result_message || ''),
       pageSummary: body?.pageSummary || {},
+      history,
     });
     return advice;
   }

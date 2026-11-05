@@ -106,6 +106,21 @@ it('对话动作清洗：只返回待办时按原话补筛选步', () => {
   ]);
 });
 
+it('对话动作清洗：未说打开/待办时不跳待办', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '先开待办再搜',
+      actions: [
+        { type: 'open_todo', query: '我的待办' },
+        { type: 'filter_list', query: '吃' },
+      ],
+    },
+    '搜索备注中有吃的数据',
+  );
+  assert.deepEqual(chat.actions.map((item) => item.type), ['filter_list']);
+  assert.equal(chat.actions[0].query, '吃');
+});
+
 it('填表映射只保留页面上的字段 label', () => {
   const result = sanitizeFillMap(
     {

@@ -13,9 +13,14 @@ export class TasksController {
     body: {
       waromUserId?: string;
       utterance?: string;
+      history?: Array<{ role?: string; content?: string }>;
+      pageSummary?: Record<string, unknown>;
     },
   ) {
-    return this.tasks.plan(String(body?.waromUserId || ''), String(body?.utterance || ''));
+    return this.tasks.plan(String(body?.waromUserId || ''), String(body?.utterance || ''), {
+      history: body?.history,
+      pageSummary: body?.pageSummary,
+    });
   }
 
   @Get(':runId')
@@ -50,6 +55,7 @@ export class TasksController {
     body: {
       lastError?: string;
       pageSummary?: Record<string, unknown>;
+      history?: Array<{ role?: string; content?: string }>;
     },
   ) {
     return this.tasks.act(Number(runId), Number(seq), body || {});

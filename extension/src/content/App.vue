@@ -26,6 +26,7 @@ const log = ref(
 const transcript = ref('准备好了。配置 DeepSeek 后即可对话。');
 const running = ref(false);
 const habitLoading = ref(false);
+const habitSuggestions = ref<string[]>([]);
 const choices = ref<ChoiceItem[]>([]);
 const awaitingConfirm = ref(false);
 const confirmLabel = ref('确认提交');
@@ -38,6 +39,44 @@ const logRef = ref<HTMLElement | null>(null);
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 
 const POSITION_KEY = 'warom-agent-position-v2';
+const CHAT_HISTORY_KEY = 'warom-agent-chat-history-v1';
+const TRANSCRIPT_KEY = 'warom-agent-transcript-v1';
+
+async function loadPersistedChat() {
+  try {
+    const stored = await chrome.storage.session.get({
+      [CHAT_HISTORY_KEY]: [],
+      [TRANSCRIPT_KEY]: '',
+    });
+    const history = Array.isArray(stored[CHAT_HISTORY_KEY]) ? stored[CHAT_HISTORY_KEY] : [];
+    chatHistory.value = history
+      .filter((item: { role?: string; content?: string }) => item && (item.role === 'user' || item.role === 'assistant'))
+      .map((item: { role: string; content: string }) => ({
+        role: item.role,
+        content: String(item.content || '').trim().slice(0, 800),
+      }))
+      .filter((item: { content: string }) => item.content)
+      .slice(-60);
+    const savedLog = String(stored[TRANSCRIPT_KEY] || '').trim();
+    if (savedLog) {
+      transcript.value = savedLog;
+      log.value = savedLog;
+    }
+  } catch {
+    // session storage 不可用时忽略
+  }
+}
+
+async function persistChat() {
+  try {
+    await chrome.storage.session.set({
+      [CHAT_HISTORY_KEY]: chatHistory.value.slice(-60),
+      [TRANSCRIPT_KEY]: String(transcript.value || '').slice(-8000),
+    });
+  } catch {
+    // ignore
+  }
+}
 
 const choiceGroups = computed(() => {
   const groups = groupCandidates(choices.value as never[]);
@@ -54,6 +93,7 @@ const choiceGroups = computed(() => {
 onMounted(async () => {
   await nextTick();
   restorePosition();
+  await loadPersistedChat();
   if (headRef.value) enableDrag(headRef.value, { ignoreSelector: '.wf-head-actions' });
   if (toggleRef.value) enableDrag(toggleRef.value);
   suppressAutoOpenFromUrl().catch(() => {});
@@ -156,20 +196,35 @@ function enableDrag(handle: HTMLElement, options: { ignoreSelector?: string } = 
   });
 }
 
+function addHabitSuggestion(text: string) {
+  const suggestion = String(text || '').trim();
+  if (!suggestion) return;
+  habitSuggestions.value = [
+    suggestion,
+    ...habitSuggestions.value.filter((item) => item !== suggestion),
+  ].slice(0, 5);
+}
+
+function applyHabitSuggestion(text: string) {
+  input.value = text;
+  nextTick(() => inputRef.value?.focus());
+}
+
+function dismissHabitSuggestion(text: string) {
+  habitSuggestions.value = habitSuggestions.value.filter((item) => item !== text);
+}
+
 async function maybeFillHabitSuggestion(options: {
   force?: boolean;
   refresh?: boolean;
   announce?: boolean;
 } = {}) {
-  if (!options.force && input.value.trim()) return;
   try {
     const result = await Habits.fetchChatBoxSuggestion(Boolean(options.refresh));
     if (result?.suggestion) {
-      if (options.force || !input.value.trim()) {
-        input.value = result.suggestion;
-      }
+      addHabitSuggestion(result.suggestion);
       if (options.announce) {
-        log.value = `${log.value}\n\n（已填入习惯建议语${result.cached ? '·缓存' : ''}）`;
+        log.value = `${log.value}\n\n（已更新顶部快捷建议${result.cached ? '·缓存' : ''}，点击可填入）`;
       }
       return;
     }
@@ -180,7 +235,7 @@ async function maybeFillHabitSuggestion(options: {
         (result?.reason === 'no-user'
           ? '未识别工号，请到设置填写'
           : '暂无建议语（需后端 DeepSeek Key，且至少 3 条聊天）');
-      log.value = `${log.value}\n\n（习惯建议未填入：${reason}）`;
+      log.value = `${log.value}\n\n（习惯建议未更新：${reason}）`;
     }
   } catch (error) {
     if (options.announce) {
@@ -254,16 +309,33 @@ async function send() {
   scrollLog();
   Habits.reportChat(utterance, 'user').catch(() => {});
   try {
-    const historyForApi = chatHistory.value.slice();
+    // 先带上当前用户句之前的历史；本轮问答在拿到回复后再写入
+    const historyForApi = chatHistory.value
+      .filter((item) => item && (item.role === 'user' || item.role === 'assistant'))
+      .map((item) => ({
+        role: item.role,
+        content: String(item.content || '').trim().slice(0, 800),
+      }))
+      .filter((item) => item.content)
+      .slice(-40);
     const response = await handleUtterance(utterance, { history: historyForApi });
     const replyText = response?.reply || response?.message || '';
-    chatHistory.value.push({ role: 'user', content: utterance });
+    // 记忆优先用简短 reply，便于下一轮指代；没有 reply 再用执行摘要
+    const assistantMemory = String(response?.reply || response?.message || '')
+      .replace(/^助手：/, '')
+      .trim()
+      .slice(0, 800);
+    chatHistory.value.push({ role: 'user', content: utterance.slice(0, 800) });
     chatHistory.value.push({
       role: 'assistant',
-      content: String(response?.reply || String(response?.message || '').slice(0, 500)),
+      content: assistantMemory || String(replyText || '').slice(0, 800),
     });
-    if (chatHistory.value.length > 24) {
-      chatHistory.value = chatHistory.value.slice(-24);
+    if (chatHistory.value.length > 60) {
+      chatHistory.value = chatHistory.value.slice(-60);
+    }
+    await persistChat();
+    if (assistantMemory) {
+      Habits.reportChat(assistantMemory, 'assistant').catch(() => {});
     }
     transcript.value = `${transcript.value.replace(/\n助手：正在思考…$/, '')}\n${response?.message || replyText}`;
     log.value = transcript.value;
@@ -368,6 +440,40 @@ function onKeydown(event: KeyboardEvent) {
           </div>
         </div>
         <div class="wf-body">
+          <div v-if="habitSuggestions.length" class="wf-suggest">
+            <div class="wf-suggest-head">
+              <span>快捷建议</span>
+              <button
+                type="button"
+                class="wf-suggest-clear"
+                :disabled="habitLoading || running"
+                @click="habitSuggestions = []"
+              >
+                清空
+              </button>
+            </div>
+            <div class="wf-suggest-list">
+              <button
+                v-for="item in habitSuggestions"
+                :key="item"
+                type="button"
+                class="wf-suggest-item"
+                :disabled="running"
+                :title="item"
+                @click="applyHabitSuggestion(item)"
+              >
+                <span class="wf-suggest-text">{{ item }}</span>
+                <span
+                  class="wf-suggest-dismiss"
+                  role="button"
+                  aria-label="移除建议"
+                  @click.stop="dismissHabitSuggestion(item)"
+                >
+                  ×
+                </span>
+              </button>
+            </div>
+          </div>
           <p class="wf-hint-top">
             先与 DeepSeek 对话；需要办事时会自动匹配并打开。请先在设置里配置 Key（或 .env）。
           </p>
