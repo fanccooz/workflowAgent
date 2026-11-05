@@ -121,6 +121,30 @@ it('对话动作清洗：未说打开/待办时不跳待办', () => {
   assert.equal(chat.actions[0].query, '吃');
 });
 
+it('对话动作清洗：纯搜索只做当前页筛选', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '好的',
+      actions: [{ type: 'open_menu', query: '加班' }],
+    },
+    '搜索通用流程',
+  );
+  assert.deepEqual(chat.actions.map((item) => [item.type, item.query]), [
+    ['filter_list', '通用流程'],
+  ]);
+});
+
+it('对话动作清洗：打开仍可跳页', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '好的',
+      actions: [{ type: 'open_menu', query: '流程定义' }],
+    },
+    '打开流程定义',
+  );
+  assert.deepEqual(chat.actions.map((item) => item.type), ['open_menu']);
+});
+
 it('填表映射只保留页面上的字段 label', () => {
   const result = sanitizeFillMap(
     {

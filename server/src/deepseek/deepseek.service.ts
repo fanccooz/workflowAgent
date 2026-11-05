@@ -124,19 +124,18 @@ export class DeepseekService {
       '格式：{"reply":"一句话说明","steps":[{"type":"...","query":"..."}]}',
       'type 只能是：open_todo、open_menu、open_workflow、filter_list、leave.open_fill。',
       '硬性规则（违反即错）：',
-      '1) 用户没说「打开/进入/去」时，禁止 open_menu、open_workflow，禁止跳到其他页面。',
-      '2) 用户没说「待办」时，禁止 open_todo，禁止进入我的待办。',
-      '3) 本句只是搜索/筛选/按备注查：已在当前列表页 → 只输出 filter_list；否则 steps=[] 并追问，绝不猜待办。',
-      '4) filter_list 的 query 只放关键字；多要求就多步；纯闲聊 steps=[]。',
+      '【打开 vs 搜索】',
+      '- 打开/进入/发起/新建 = 跳转打开页面（open_workflow / open_menu / open_todo）。',
+      '- 搜索/筛选/过滤/查找 = 只在当前页面搜索（filter_list），禁止因此打开待办或其他页。',
+      '1) 说了打开/进入/发起/新建某流程 → open_workflow（请假填表 → leave.open_fill）。',
+      '2) 说了打开/进入某菜单/模块/页面 → open_menu。',
+      '3) 没说打开/进入/发起/新建 → 禁止 open_menu、open_workflow。',
+      '4) 没说「待办」→ 禁止 open_todo。',
+      '5) 只说搜索/筛选 → 只输出 filter_list，不要追问页面，不要跳页。',
       '对照例子：',
-      '上文已在加班页，输入：搜索备注中有吃的数据',
-      '输出：{"reply":"在当前页筛选","steps":[{"type":"filter_list","query":"吃"}]}',
-      '输入：搜索备注中有吃的数据（未说打开/进入/待办）',
-      '输出：{"reply":"请先说明在哪个页面搜索，或说「打开某某页面」后再搜。","steps":[]}',
-      '输入：打开我的待办，筛选通用流程',
-      '输出：{"reply":"先打开待办再筛选","steps":[{"type":"open_todo","query":"我的待办"},{"type":"filter_list","query":"通用流程"}]}',
-      '输入：打开请假流程',
-      '输出：{"reply":"好的，打开请假","steps":[{"type":"open_workflow","query":"打开请假"}]}',
+      '打开请假流程 → open_workflow；打开流程定义 → open_menu；进入人事 → open_menu。',
+      '搜索备注中有吃的 → 仅 filter_list(query=吃)；筛选通用流程 → 仅 filter_list。',
+      '打开我的待办再筛选通用流程 → open_todo + filter_list。',
     ].join('\n');
 
     const messages: Array<{ role: string; content: string }> = [{ role: 'system', content: system }];
@@ -151,8 +150,7 @@ export class DeepseekService {
       content: JSON.stringify({
         utterance: String(utterance || ''),
         page,
-        instruction:
-          '没说打开/进入就不要跳页；没说待办就不要进待办；只搜索则当前页 filter_list 或追问。',
+        instruction: '打开=跳页；搜索=当前页 filter_list。二者不要混。',
       }),
     });
 
@@ -204,7 +202,7 @@ export class DeepseekService {
   }
 
   private saidOpenOrEnter(text: string): boolean {
-    return /打开|进入|(?:^|[，,。；;])去/.test(String(text || ''));
+    return /打开|进入|发起|新建|帮我开|(?:^|[，,。；;])去/.test(String(text || ''));
   }
 
   /** 用户明确要求跳页时才允许导航类步骤 */
@@ -234,9 +232,17 @@ export class DeepseekService {
     return /已打开菜单|已进入|已打开流程|已尝试进入|打开菜单「/.test(hist);
   }
 
-  /** 按用户原话硬裁剪导航步骤：没说的页面绝不跳 */
+  private saidSearchOnly(text: string): boolean {
+    const raw = String(text || '');
+    return /筛选|过滤|搜索|查找/.test(raw) && !this.saidOpenOrEnter(raw) && !this.saidTodo(raw);
+  }
+
+  /** 按用户原话硬裁剪导航步骤：打开才跳页，搜索只留 filter_list */
   private stripUnauthorizedNavigation(text: string, steps: PlanStep[]): PlanStep[] {
     let list = Array.isArray(steps) ? steps.slice() : [];
+    if (this.saidSearchOnly(text)) {
+      return list.filter((step) => step.type === 'filter_list');
+    }
     const todo = this.saidTodo(text);
     const openEnter = this.saidOpenOrEnter(text);
     if (!todo) list = list.filter((step) => step.type !== 'open_todo');
@@ -258,23 +264,16 @@ export class DeepseekService {
     let list = this.stripUnauthorizedNavigation(text, steps);
     const wantsFilter = /筛选|过滤|搜索|查找|备注/.test(text);
     const wantsNav = this.wantsExplicitNavigation(text);
-    const alreadyOnPage = this.looksLikeAlreadyOnListPage(ctx?.pageSummary, ctx?.history);
     const keyword = this.extractFilterKeyword(text);
-    const askMessage = keyword
-      ? `当前要在本页搜索「${keyword}」吗？若要换页，请先说「打开/进入某某页面」；要进待办请明确说「待办」。`
-      : '请先说明在哪个页面操作。若要换页请说「打开/进入某某」；要进待办请明确说「待办」。';
 
-    // 未要求跳页 + 只是搜索/筛选
-    if (wantsFilter && !wantsNav) {
-      if (alreadyOnPage) {
-        list = list.filter((step) => step.type === 'filter_list');
-        if (!list.length && keyword) list = [{ type: 'filter_list', query: keyword }];
-        else if (list.length && keyword) {
-          list = list.map((step) => ({ ...step, query: step.query || keyword }));
-        }
-        return { steps: list, askUser: false };
+    // 只搜索：一律当前页 filter_list，不跳页、不追问
+    if (this.saidSearchOnly(text) || (wantsFilter && !wantsNav)) {
+      list = list.filter((step) => step.type === 'filter_list');
+      if (!list.length && keyword) list = [{ type: 'filter_list', query: keyword }];
+      else if (list.length && keyword) {
+        list = list.map((step) => ({ ...step, query: step.query || keyword }));
       }
-      return { steps: [], askUser: true, askMessage };
+      return { steps: list, askUser: false };
     }
 
     const hasNav = list.some((s) => ['open_todo', 'open_menu', 'open_workflow'].includes(s.type));

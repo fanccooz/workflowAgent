@@ -21,9 +21,9 @@ type ChoiceItem = {
 const open = ref(false);
 const input = ref('');
 const log = ref(
-  '准备好了。配置 DeepSeek 后即可对话，例如：帮我请假，明天到后天，事由开会',
+  '准备好了。可以闲聊，也可以办事，例如：打开请假流程；或帮我请假，明天到后天，事由开会。',
 );
-const transcript = ref('准备好了。配置 DeepSeek 后即可对话。');
+const transcript = ref('准备好了。可以闲聊，也可以说要打开的流程/菜单。');
 const running = ref(false);
 const habitLoading = ref(false);
 const habitSuggestions = ref<string[]>([]);
@@ -202,7 +202,7 @@ function addHabitSuggestion(text: string) {
   habitSuggestions.value = [
     suggestion,
     ...habitSuggestions.value.filter((item) => item !== suggestion),
-  ].slice(0, 5);
+  ].slice(0, 3);
 }
 
 function applyHabitSuggestion(text: string) {

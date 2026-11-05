@@ -612,8 +612,24 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     if (!response || !response.ok) {
       throw new Error((response && response.message) || '对话失败');
     }
-    const parsed = Intent.parseModelJson(response.content);
-    return Intent.sanitizeChatAction(parsed, utterance);
+    const raw = String(response.content || '').trim();
+    try {
+      const parsed = Intent.parseModelJson(raw);
+      return Intent.sanitizeChatAction(parsed, utterance);
+    } catch (error) {
+      // 模型偶尔不按 JSON 回：仍当作普通闲聊回复，避免整段对话挂掉
+      const plain = raw
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+      return Intent.sanitizeChatAction(
+        {
+          reply: plain || '我在，你可以继续说。',
+          actions: [{ type: 'none', query: '' }],
+        },
+        utterance,
+      );
+    }
   }
 
   function setNativeValue(el, value) {
@@ -1118,15 +1134,71 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     return lines.join('\n');
   }
 
+  function saidOpenOrEnter(text) {
+    return /打开|进入|发起|新建|帮我开|(?:^|[，,。；;])去/.test(String(text || ''));
+  }
+
   function filterActionableSteps(utterance, actions) {
     const saidTodo = /待办/.test(String(utterance || ''));
-    const saidOpenEnter = /打开|进入|(?:^|[，,。；;])去/.test(String(utterance || ''));
+    const canJump = saidOpenOrEnter(utterance);
     return (actions || []).filter((item) => {
       if (!item || !item.type || item.type === 'none') return false;
       if (item.type === 'open_todo' && !saidTodo) return false;
-      if ((item.type === 'open_menu' || item.type === 'open_workflow') && !saidOpenEnter) return false;
+      if ((item.type === 'open_menu' || item.type === 'open_workflow') && !canJump) return false;
       return true;
     });
+  }
+
+  /** AI 没给出动作时，按原话做本地打开（流程/菜单/待办/请假） */
+  async function tryLocalOpenFromUtterance(utterance, settings) {
+    const text = String(utterance || '').replace(/\s+/g, '');
+    if (!text) return null;
+    if (!saidOpenOrEnter(text) && !/待办/.test(text)) return null;
+
+    if (Leave.looksLikeLeaveTask(utterance)) {
+      return runLeaveAgent(utterance);
+    }
+    if (/待办/.test(text)) {
+      return executeChatAction({ type: 'open_todo', query: '我的待办' }, utterance);
+    }
+
+    const scope = Intent.detectScope(utterance, settings || {});
+    if (scope === 'menu' || /菜单|模块|页面|导航|流程定义/.test(text)) {
+      const hits = matchMenusLocally(utterance);
+      if (hits.length === 1) {
+        const opened = await openCandidate(hits[0]);
+        return { ...opened, choices: [] };
+      }
+      if (hits.length > 1) {
+        return {
+          status: 'choose',
+          message: formatChooseMessage({ candidates: hits }),
+          choices: hits,
+        };
+      }
+    }
+
+    if (scope === 'workflow' || /流程|打开|发起|新建|填写/.test(text)) {
+      const opened = await openWorkflowByUtterance(utterance);
+      if (opened && opened.status !== 'none') {
+        return { ...opened, choices: opened.choices || opened.matches || [] };
+      }
+      // 流程表可能还没加载：再试菜单
+      const menuHits = matchMenusLocally(utterance);
+      if (menuHits.length === 1) {
+        const openedMenu = await openCandidate(menuHits[0]);
+        return { ...openedMenu, choices: [] };
+      }
+      if (menuHits.length > 1) {
+        return {
+          status: 'choose',
+          message: formatChooseMessage({ candidates: menuHits }),
+          choices: menuHits,
+        };
+      }
+      return { ...opened, choices: opened.matches || [] };
+    }
+    return null;
   }
 
   /**
@@ -1142,6 +1214,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     const pageSummary = collectPageSummary();
 
     let chatOk = false;
+    let chatError = '';
     try {
       const chat = await askDeepSeekChat(utterance, history, pageSummary);
       reply = chat.reply || '';
@@ -1149,6 +1222,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       plannedVia = 'extension';
       chatOk = true;
     } catch (error) {
+      chatError = error && error.message ? String(error.message) : '对话失败';
       reply = '';
       actions = [];
     }
@@ -1172,11 +1246,42 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
           }
         }
       } catch (error) {
-        if (!reply) throw error;
+        if (!reply) {
+          const nestMsg = error && error.message ? String(error.message) : '规划失败';
+          throw new Error(chatError ? `${chatError}；Nest：${nestMsg}` : nestMsg);
+        }
       }
     }
 
-    const actionable = filterActionableSteps(utterance, actions);
+    if (!chatOk && !reply) {
+      throw new Error(
+        chatError
+          || 'DeepSeek 对话失败。请检查扩展选项里的 API Key，并重新加载扩展。',
+      );
+    }
+
+    let actionable = filterActionableSteps(utterance, actions);
+
+    // 模型只回了话、没给打开动作时：本地按关键字补开流程/菜单（关键词默认已含「打开/流程/菜单」）
+    if (!actionable.length && (saidOpenOrEnter(utterance) || /待办/.test(String(utterance || '')))) {
+      const settings = await loadAiSettings();
+      const local = await tryLocalOpenFromUtterance(utterance, settings);
+      if (local) {
+        return {
+          ...local,
+          message: local.message
+            ? `助手：${reply || '好的。'}\n\n执行：\n1. ${local.message}`
+            : `助手：${reply || local.message || '好的。'}`,
+          reply: reply || local.message || '好的。',
+          action: { type: 'none', query: '' },
+          actions: [],
+          plannedVia: `${plannedVia}+local`,
+          choices: local.choices || [],
+          runId: runId || null,
+        };
+      }
+    }
+
     if (!actionable.length) {
       return {
         status: 'chat',

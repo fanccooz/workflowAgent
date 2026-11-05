@@ -156,29 +156,19 @@
   }
 
   function saidOpenOrEnter(text) {
-    return /打开|进入|(?:^|[，,。；;])去/.test(String(text || ''));
+    // 打开/进入/发起/新建 = 跳页；「去某某」也算。单纯「搜索」不算打开。
+    return /打开|进入|发起|新建|帮我开|(?:^|[，,。；;])去/.test(String(text || ''));
   }
 
-  function stripUnauthorizedNavigation(text, actions) {
-    let list = Array.isArray(actions) ? actions.slice() : [];
-    if (!text) return list;
-    if (!saidTodo(text)) list = list.filter((item) => item.type !== 'open_todo');
-    if (!saidOpenOrEnter(text)) {
-      list = list.filter((item) => item.type !== 'open_menu' && item.type !== 'open_workflow');
-    }
-    return list;
+  function saidSearchOnly(text) {
+    const raw = String(text || '');
+    return /筛选|过滤|搜索|查找/.test(raw) && !saidOpenOrEnter(raw) && !saidTodo(raw);
   }
 
-  /** 从用户原话补全「导航 + 筛选」等多步（任意列表页，不限待办） */
-  function inferFilterFollowUp(utterance, actions) {
-    const text = String(utterance || '').replace(/\s+/g, '');
-    let list = stripUnauthorizedNavigation(text, actions);
-    if (list.some((item) => item.type === 'filter_list')) return list;
-    if (!/筛选|过滤|按.+查|查出|查找|搜索/.test(text)) return list;
-
-    let keyword = '';
+  function extractSearchKeyword(text) {
+    const raw = String(text || '').replace(/\s+/g, '');
     const patterns = [
-      /备注[为是:：]?\s*([^，,。；;有中的数据]+)/,
+      /备注(?:中|里)?(?:有|含|为|是|:|：)\s*([^，,。；;的数据]+)/,
       /筛选([^的数据页面列表]+)/,
       /过滤([^的数据页面列表]+)/,
       /搜索([^的数据页面列表]+)/,
@@ -187,12 +177,48 @@
       /跟([^有关相关]+)/,
     ];
     for (const pattern of patterns) {
-      const hit = text.match(pattern);
+      const hit = raw.match(pattern);
       if (hit && hit[1]) {
-        keyword = hit[1].replace(/^(页面|列表|数据|有关|相关|备注[为是:：]?|中有|里有)/, '').trim();
-        if (keyword) break;
+        const keyword = hit[1]
+          .replace(/^(页面|列表|数据|有关|相关|备注[为是:：]?|中有|里有)/, '')
+          .replace(/的数据$/, '')
+          .trim();
+        if (keyword) return keyword;
       }
     }
+    return '';
+  }
+
+  function stripUnauthorizedNavigation(text, actions) {
+    let list = Array.isArray(actions) ? actions.slice() : [];
+    if (!text) return list;
+    // 纯搜索：只保留 filter_list，绝不跳页
+    if (saidSearchOnly(text)) {
+      return list.filter((item) => item.type === 'filter_list');
+    }
+    if (!saidTodo(text)) list = list.filter((item) => item.type !== 'open_todo');
+    if (!saidOpenOrEnter(text)) {
+      list = list.filter((item) => item.type !== 'open_menu' && item.type !== 'open_workflow');
+    }
+    return list;
+  }
+
+  /** 从用户原话补全「导航 + 筛选」等多步；搜索=当前页，打开=跳页 */
+  function inferFilterFollowUp(utterance, actions) {
+    const text = String(utterance || '').replace(/\s+/g, '');
+    let list = stripUnauthorizedNavigation(text, actions);
+    if (!/筛选|过滤|按.+查|查出|查找|搜索/.test(text)) return list;
+
+    const keyword = extractSearchKeyword(text);
+    if (!keyword && list.some((item) => item.type === 'filter_list')) return list;
+
+    // 只搜索：强制当前页 filter_list
+    if (saidSearchOnly(text)) {
+      if (!keyword) return list.length ? list : [{ type: 'none', query: '' }];
+      return [{ type: 'filter_list', query: keyword }];
+    }
+
+    if (list.some((item) => item.type === 'filter_list')) return list;
     if (!keyword) return list;
 
     const usable = list.filter((item) => item.type !== 'none');
@@ -206,10 +232,6 @@
           usable.push({ type: 'open_menu', query: menuHit[1] });
         }
       }
-    }
-    // 没说打开/进入/待办：不补导航，交给追问
-    if (!hasNav && !wantsNav && !usable.length) {
-      return [{ type: 'none', query: '' }];
     }
     usable.push({ type: 'filter_list', query: keyword });
     return stripUnauthorizedNavigation(text, usable);
@@ -229,7 +251,12 @@
     const first = actions[0] || { type: 'none', query: '' };
     let reply = String(data.reply || data.message || '').trim();
     if (first.type === 'none' && !reply) {
-      reply = '请先说明在哪个页面操作。若要换页请说「打开/进入某某」；要进待办请明确说「待办」。';
+      reply = saidSearchOnly(utterance || '')
+        ? '好的，我在当前页面搜索。'
+        : '嗯，我在。你可以继续聊；要办事可以说「打开某某」，要搜可以说「搜索某某」。';
+    }
+    if (first.type === 'filter_list' && !reply) {
+      reply = `好的，在当前页搜索「${first.query || ''}」。`;
     }
     return {
       reply: reply || '好的。',

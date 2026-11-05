@@ -15,19 +15,24 @@
   }
 
   /** 发起 DeepSeek Chat Completions 请求，返回助手文本内容 */
-  async function chatCompletions(settings, messages) {
+  async function chatCompletions(settings, messages, options) {
+    const opts = options || {};
     const base = String(settings.baseUrl || API_DEFAULTS.baseUrl).replace(/\/$/, '');
+    const body = {
+      model: settings.model || API_DEFAULTS.model,
+      temperature: opts.temperature == null ? 0 : opts.temperature,
+      messages,
+    };
+    if (opts.jsonObject) {
+      body.response_format = { type: 'json_object' };
+    }
     const response = await fetch(`${base}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${settings.apiKey}`,
       },
-      body: JSON.stringify({
-        model: settings.model || API_DEFAULTS.model,
-        temperature: 0,
-        messages,
-      }),
+      body: JSON.stringify(body),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -83,22 +88,29 @@
     return out;
   }
 
+  function looksLikePageOp(utterance) {
+    const text = String(utterance || '');
+    return /打开|进入|发起|新建|待办|流程|菜单|模块|页面|筛选|过滤|搜索|查找|请假|出差|加班/.test(text);
+  }
+
   function buildChatMessages(utterance, history, pageSummary) {
     const system = [
-      '你是目标信息平台里的对话助手，用中文简短自然地回复。',
-      '必须结合「最近对话」理解指代与追问（那个/刚才/继续/同上/我刚才说的/他还说了什么），不要当每句都是新会话。',
-      '每一轮你既要对话，也要判断要不要让前端去操作系统页面。',
-      '用户一句话里若有多个要求，必须拆成多个步骤，按执行顺序全部放入 actions，不要只返回第一步。',
-      '硬性：用户没说「打开/进入/去」时禁止 open_menu、open_workflow，不要跳其他页。',
-      '硬性：用户没说「待办」时禁止 open_todo，不要进我的待办。',
-      '只搜索/筛选：已在当前页 → 仅 filter_list；否则 type=none 并追问。',
-      '闲聊、问答、澄清 → type=none，在 reply 里正常回答或追问，且要接上文。',
-      '只输出一个 JSON 对象，不要 Markdown，不要解释。格式：',
+      '你是目标信息平台里的中文助手，可以正常闲聊，也可以办事。',
+      '必须结合「最近对话」理解指代与追问（那个/刚才/继续/同上），不要当每句都是新会话。',
+      '【打开 vs 搜索】必须严格区分：',
+      '- 「打开/进入/发起/新建」= 跳转打开页面：流程→open_workflow，菜单/模块/页面→open_menu，待办→open_todo。',
+      '- 「搜索/筛选/过滤/查找」= 只在当前页面做列表搜索：只能 filter_list，query 放关键字；禁止因此打开待办或其他页面。',
+      '闲聊问候问答：type=none，自然回复，不要追问页面。',
+      '硬性：没说打开/进入/发起/新建/待办时，禁止 open_menu、open_workflow、open_todo。',
+      '硬性：只说搜索/筛选时，只输出 filter_list，不要问「在哪个页面」。',
+      '一句话里既打开又搜索：先打开再 filter_list，按顺序多个 actions。',
+      '只输出一个 JSON 对象，不要 Markdown。格式：',
       '{"reply":"给用户看的话","actions":[{"type":"none|leave.open_fill|open_workflow|open_menu|open_todo|filter_list","query":"短句"}]}',
-      '用户要请假或发起并填写表单 → leave.open_fill。',
-      '用户明确说打开某流程 → open_workflow；明确说打开/进入某菜单 → open_menu；明确说待办 → open_todo。',
-      '示例：上文用户说名字是张三，本句「我叫什么」→ type=none，reply 回答张三；上文已在加班页「搜索备注有吃的」→ 仅 filter_list。',
-      'query 要短；具体填哪些框由后续按页面字段再推理，不要把长段说明塞进 query。',
+      '示例：',
+      '「打开请假流程」→ open_workflow；「打开流程定义」→ open_menu；「进入人事」→ open_menu。',
+      '「搜索备注有吃的」→ 仅 filter_list(query=吃)；「筛选通用流程」→ 仅 filter_list。',
+      '「打开我的待办，再搜索请假」→ open_todo + filter_list。',
+      'query 要短，便于本地匹配。',
     ].join('');
 
     const messages = [{ role: 'system', content: system }];
@@ -107,9 +119,11 @@
       messages.push(item);
     }
     const page = pageSummary && typeof pageSummary === 'object' ? pageSummary : null;
-    // 当前轮：纯文本指令 + 可选页面摘要，避免盖住多轮对话语义
     const parts = [`用户本轮说：${String(utterance || '').trim()}`];
-    if (page) parts.push(`当前页面摘要：${JSON.stringify(page)}`);
+    // 闲聊不塞页面摘要，避免模型总往「办事」上靠
+    if (page && looksLikePageOp(utterance)) {
+      parts.push(`当前页面摘要：${JSON.stringify(page)}`);
+    }
     if (prior.length) parts.push('请务必结合上面的最近对话作答。');
     messages.push({ role: 'user', content: parts.join('\n') });
     return messages;
@@ -145,7 +159,10 @@
   /** 对话 + 决定动作 */
   async function chat(settings, utterance, history, pageSummary) {
     assertReady(settings, '对话');
-    return chatCompletions(settings, buildChatMessages(utterance, history, pageSummary));
+    return chatCompletions(settings, buildChatMessages(utterance, history, pageSummary), {
+      temperature: 0.4,
+      jsonObject: true,
+    });
   }
 
   /** 从候选里选流程/菜单/待办 */
