@@ -1,4 +1,7 @@
 node_modules/
+extension/node_modules/
+extension/dist/
+extension/.env
 server/node_modules/
 server/dist/
 server/data/

@@ -1,63 +1,67 @@
-# 华荣流程助手
+# 流程助手
 
-给普通用户用的 Chrome 插件。在已经登录的华荣照明信息平台里，用「流程助手」打开流程；可选接入 **DeepSeek**，在助手窗口里跨流程 / 菜单 / 待办搜索。
+Chrome MV3 扩展 + Nest 习惯服务。在已登录的信息平台里，用「流程助手」打开流程、筛选列表、请假填表；可选 DeepSeek。
 
-流程名称和代码不写死。API Key 只保存在本机浏览器。
+扩展前端为 **Vue 3 + TypeScript**（Vite + CRX 构建）。
 
-## 安装
+## 扩展：安装
 
-1. 用 Chrome 打开 `chrome://extensions`。
-2. 打开右上角「开发者模式」。
-3. 点「加载已解压的扩展程序」，选择 `warom-workflow-agent` 这个文件夹本身。
-4. 改完代码后在扩展页点「重新加载」，再刷新华荣页面。
-5. 打开并登录 `https://test.warom-lighting.com/v2_debug_ouyang/`。
+```bash
+cd extension
+npm install
+npm run build
+```
+
+1. Chrome 打开 `chrome://extensions`
+2. 打开「开发者模式」
+3. 「加载已解压的扩展程序」→ 选择 **`extension/dist`**
+4. 改代码后执行 `npm run build`，再在扩展页点「重新加载」，并刷新平台页面
+5. 打开并登录你的信息平台（默认匹配 `https://test.warom-lighting.com/v2_debug_ouyang/`，可在 `extension/manifest.config.ts` 修改）
+
+开发时可在 `extension` 目录执行 `npm run dev`（CRX/Vite 热更新）。
+
+## 扩展环境变量
+
+```bash
+cd extension
+copy .env.example .env
+# 填写 VITE_DEEPSEEK_API_KEY=...
+npm run build
+```
+
+- `.env` 仅本机（已 gitignore）；`.env.example` 只放空占位
+- 构建时注入为默认 Key；「扩展选项」里保存的值优先写入 `chrome.storage`
 
 ## 配置 DeepSeek（可选）
 
-1. 在扩展卡片点「详细信息」→「扩展程序选项」，或助手面板里的「设置」。
-2. 打开「启用 AI 搜索」，填入 DeepSeek API Key。
-3. Base URL 默认 `https://api.deepseek.com`，模型默认 `deepseek-chat`。
-4. 保存后刷新华荣页面。
+1. 扩展「详细信息」→「扩展程序选项」，或面板「设置」
+2. 启用 AI，填写 DeepSeek API Key（若 `.env` 已配则可留空）
+3. 保存后刷新平台页
 
-不填 Key 时，仍可用规则匹配打开流程（例如「打开请假流程」）。
-
-## 使用
-
-1. 点右下角（或右侧）「流程助手」展开面板。
-2. 输入一句话后点「发送」。
-
-行为约定：
-
-- **已配置 DeepSeek**：会话框先与模型对话；模型若判断要办事，再本地匹配/打开/填请假草稿。
-- **未配置 AI**：仍可用规则打开流程；带日期事由的请假走本地 Agent。
-- **打开某流程**：唯一命中则打开发起弹窗；多名则列出。
-
-## 自测
-
-```bash
-node --test tests/intent.test.js tests/extension-match.test.js tests/extension-has-no-catalog.test.js tests/agent.test.js tests/leave-slots.test.js
-```
-
-## 习惯建议语后端（可选）
-
-用 Nest 存最近聊天，并由 **DeepSeek 生成一句**填进助手输入框：
+## 习惯建议语 / 任务拆步后端（可选）
 
 ```bash
 cd server
 copy .env.example .env
-# 填写 DEEPSEEK_API_KEY
+# 填写 DEEPSEEK_API_KEY、EXTENSION_TOKEN
 npm install
 npx nest start
 ```
 
-扩展「设置」里填写：后端 `http://localhost:3000`、Token、工号。详见 `server/README.md` 与 `docs/superpowers/specs/2026-11-02-habit-chat-suggestion-design.md`。
+扩展设置里填写：后端 `http://localhost:3000`、Token、工号。
 
-启用后端后，助手会：**DeepSeek 拆步 → 写入 SQLite → 逐步执行 → 失败再问 DeepSeek 补救**。
+启用后端后：**DeepSeek 拆步 → SQLite 落库 → 逐步执行 → 失败再 Act**。
 
-## 请假 / 填表 Agent（第一期）
+## 自测
 
-在已登录页面输入例如：`帮我请假，明天到后天，事由开会`
+```bash
+cd extension
+npm test
+```
 
-助手会：对话 → 打开请假弹窗 → **把弹窗字段发给 DeepSeek 拆解回填** → 面板「确认提交」。
+## 目录
 
-无 Key 时用本地规则兜底。日期类控件若写不进，需在弹窗手补后再确认提交。
+- `extension/src` — Vue/TS 源码
+- `extension/dist` — 构建产物（加载此目录）
+- `extension/legacy` — 旧版原生 JS（仅存档）
+- `server` — Nest 习惯 / 任务服务

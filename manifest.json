@@ -1,44 +1,7 @@
 {
+  "_comment": "请加载 extension/dist（先 cd extension && npm run build）。本文件不再作为扩展入口。",
   "manifest_version": 3,
-  "name": "华荣流程助手",
-  "version": "1.1.2",
-  "description": "在华荣照明信息平台里用一句话打开流程，并可用 DeepSeek 跨流程/菜单/待办搜索。",
-  "permissions": ["activeTab", "scripting", "storage"],
-  "host_permissions": [
-    "https://test.warom-lighting.com/*",
-    "https://api.deepseek.com/*",
-    "http://localhost:3000/*",
-    "http://127.0.0.1:3000/*"
-  ],
-  "background": {
-    "service_worker": "extension/background.js"
-  },
-  "options_ui": {
-    "page": "extension/options.html",
-    "open_in_tab": true
-  },
-  "action": {
-    "default_title": "华荣流程助手",
-    "default_popup": "extension/popup.html"
-  },
-  "content_scripts": [
-    {
-      "matches": ["https://test.warom-lighting.com/v2_debug_ouyang/*"],
-      "js": ["extension/early-clean.js"],
-      "run_at": "document_start"
-    },
-    {
-      "matches": ["https://test.warom-lighting.com/v2_debug_ouyang/*"],
-      "js": [
-        "extension/match.js",
-        "extension/intent.js",
-        "extension/skills/leave.js",
-        "extension/agent.js",
-        "extension/tools.js",
-        "extension/habits.js",
-        "extension/content.js"
-      ],
-      "run_at": "document_idle"
-    }
-  ]
+  "name": "流程助手（请加载 extension/dist）",
+  "version": "0.0.0",
+  "description": "已迁移到 Vue3+TS 构建产物，请加载 extension/dist 目录。"
 }

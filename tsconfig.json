@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "preserve",
+    "paths": {
+      "@/*": ["./extension/src/*"]
+    }
+  },
+  "include": [
+    "extension/src/**/*.ts",
+    "extension/src/**/*.tsx",
+    "extension/src/**/*.vue",
+    "extension/src/**/*.d.ts"
+  ]
+}
