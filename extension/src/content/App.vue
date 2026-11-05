@@ -32,6 +32,7 @@ const awaitingConfirm = ref(false);
 const confirmLabel = ref('确认提交');
 const confirmHint = ref('');
 const chatHistory = ref<Array<{ role: string; content: string }>>([]);
+const aiReadyHint = ref(false);
 const rootRef = ref<HTMLElement | null>(null);
 const headRef = ref<HTMLElement | null>(null);
 const toggleRef = ref<HTMLElement | null>(null);
@@ -90,10 +91,20 @@ const choiceGroups = computed(() => {
     .filter((group) => group.items.length > 0);
 });
 
+async function refreshAiHint() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: MSG.getSettings });
+    aiReadyHint.value = Boolean(response?.settings?.enabled && response?.settings?.hasKey);
+  } catch {
+    aiReadyHint.value = false;
+  }
+}
+
 onMounted(async () => {
   await nextTick();
   restorePosition();
   await loadPersistedChat();
+  await refreshAiHint();
   if (headRef.value) enableDrag(headRef.value, { ignoreSelector: '.wf-head-actions' });
   if (toggleRef.value) enableDrag(toggleRef.value);
   suppressAutoOpenFromUrl().catch(() => {});
@@ -475,7 +486,12 @@ function onKeydown(event: KeyboardEvent) {
             </div>
           </div>
           <p class="wf-hint-top">
-            先与 DeepSeek 对话；需要办事时会自动匹配并打开。请先在设置里配置 Key（或 .env）。
+            <template v-if="aiReadyHint">
+              先与 DeepSeek 对话；问当前页有多少条会读列表；要办事请说「打开/进入」或「搜索」。
+            </template>
+            <template v-else>
+              先与 DeepSeek 对话；需要办事时会自动匹配并打开。请先在设置里配置 Key（或 .env 后重新加载扩展）。
+            </template>
           </p>
           <div ref="logRef" class="wf-log">{{ log }}</div>
 

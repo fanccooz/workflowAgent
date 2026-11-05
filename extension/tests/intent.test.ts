@@ -92,18 +92,41 @@ it('对话动作清洗：多步 actions 保持顺序', () => {
   assert.equal(chat.actions[1].query, '通用流程');
 });
 
-it('对话动作清洗：只返回待办时按原话补筛选步', () => {
+it('对话动作清洗：打开待办时按原话补筛选步', () => {
   const chat = sanitizeChatAction(
     {
       reply: '好的',
       action: { type: 'open_todo', query: '我的待办' },
     },
-    '我的待办页面筛选通用流程的数据',
+    '打开我的待办页面筛选通用流程的数据',
   );
   assert.deepEqual(chat.actions.map((item) => [item.type, item.query]), [
     ['open_todo', '我的待办'],
     ['filter_list', '通用流程'],
   ]);
+});
+
+it('对话动作清洗：问待办有多少条不跳页', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '我在，你可以继续说。',
+      actions: [{ type: 'open_todo', query: '我的待办' }],
+    },
+    '我的待办页面有多少条数据？',
+  );
+  assert.deepEqual(chat.actions.map((item) => item.type), ['none']);
+});
+
+it('对话动作清洗：当前页有多少条不打开待办', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '',
+      actions: [{ type: 'open_todo', query: '我的待办' }],
+    },
+    '当前页面有多少条数据？',
+  );
+  assert.equal(chat.action.type, 'none');
+  assert.match(chat.reply, /没读到|页面|数据|条/);
 });
 
 it('对话动作清洗：未说打开/待办时不跳待办', () => {

@@ -155,6 +155,16 @@
     return /待办/.test(String(text || ''));
   }
 
+  /** 明确要打开待办；问答「有多少条」不算打开 */
+  function wantsOpenTodo(text) {
+    const raw = String(text || '').replace(/\s+/g, '');
+    if (!/待办/.test(raw)) return false;
+    if (/[？?]|多少|几条|什么|吗|呢|是否|有没有|怎么|如何/.test(raw) && !/打开|进入/.test(raw)) {
+      return false;
+    }
+    return /打开|进入|发起|新建|去我的待办|^我的待办$/.test(raw);
+  }
+
   function saidOpenOrEnter(text) {
     // 打开/进入/发起/新建 = 跳页；「去某某」也算。单纯「搜索」不算打开。
     return /打开|进入|发起|新建|帮我开|(?:^|[，,。；;])去/.test(String(text || ''));
@@ -196,7 +206,7 @@
     if (saidSearchOnly(text)) {
       return list.filter((item) => item.type === 'filter_list');
     }
-    if (!saidTodo(text)) list = list.filter((item) => item.type !== 'open_todo');
+    if (!wantsOpenTodo(text)) list = list.filter((item) => item.type !== 'open_todo');
     if (!saidOpenOrEnter(text)) {
       list = list.filter((item) => item.type !== 'open_menu' && item.type !== 'open_workflow');
     }
@@ -223,9 +233,9 @@
 
     const usable = list.filter((item) => item.type !== 'none');
     const hasNav = usable.some((item) => ['open_todo', 'open_menu', 'open_workflow'].includes(item.type));
-    const wantsNav = saidTodo(text) || saidOpenOrEnter(text);
+    const wantsNav = wantsOpenTodo(text) || saidOpenOrEnter(text);
     if (!hasNav && wantsNav) {
-      if (saidTodo(text)) usable.push({ type: 'open_todo', query: '我的待办' });
+      if (wantsOpenTodo(text)) usable.push({ type: 'open_todo', query: '我的待办' });
       else if (saidOpenOrEnter(text)) {
         const menuHit = text.match(/(?:打开|进入|去)([^，,。筛选过滤搜索查询页面列表]{2,16})(?:页面|列表|模块|菜单)?/);
         if (menuHit && menuHit[1] && !/待办/.test(menuHit[1])) {
@@ -248,12 +258,18 @@
       actions = [{ type: 'none', query: '' }];
     }
     actions = inferFilterFollowUp(utterance || '', actions);
+    if (!actions.length) actions = [{ type: 'none', query: '' }];
     const first = actions[0] || { type: 'none', query: '' };
     let reply = String(data.reply || data.message || '').trim();
     if (first.type === 'none' && !reply) {
-      reply = saidSearchOnly(utterance || '')
-        ? '好的，我在当前页面搜索。'
-        : '嗯，我在。你可以继续聊；要办事可以说「打开某某」，要搜可以说「搜索某某」。';
+      const ask = String(utterance || '');
+      if (/[？?]|多少|几条|什么|吗|呢/.test(ask)) {
+        reply = '我还没读到可用的页面数据，请再说一次，或先打开目标列表页。';
+      } else if (saidSearchOnly(ask)) {
+        reply = '好的，我在当前页面搜索。';
+      } else {
+        reply = '嗯，我在。你可以继续聊；要办事可以说「打开某某」，要搜可以说「搜索某某」。';
+      }
     }
     if (first.type === 'filter_list' && !reply) {
       reply = `好的，在当前页搜索「${first.query || ''}」。`;
@@ -334,4 +350,7 @@ export {DEFAULT_KEYWORDS,
     inferFilterFollowUp,
     sanitizeReflect,
     sanitizeFillMap,
-    parseModelJson,};
+    parseModelJson,
+    wantsOpenTodo,
+    saidOpenOrEnter,
+    saidSearchOnly,};

@@ -621,10 +621,16 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       const plain = raw
         .replace(/^```(?:json)?\s*/i, '')
         .replace(/\s*```$/i, '')
+        .trim()
+        .replace(/^\{[\s\S]*\}$/, '')
         .trim();
+      const fallbackAsk = /[？?]|多少|几条|什么|吗|呢/.test(String(utterance || ''));
       return Intent.sanitizeChatAction(
         {
-          reply: plain || '我在，你可以继续说。',
+          reply: plain
+            || (fallbackAsk
+              ? '我暂时没解析出模型回答，请再问一次当前页有多少条。'
+              : '嗯，我在。请再说具体一点，或说「打开某某」「搜索某某」。'),
           actions: [{ type: 'none', query: '' }],
         },
         utterance,
@@ -992,6 +998,33 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     return { status: 'chat', message: '', choices: [] };
   }
 
+  function collectListStats() {
+    const bodyText = String(document.body && document.body.innerText || '').replace(/\s+/g, ' ');
+    const pagEl = document.querySelector('.el-pagination, .pagination, [class*="pagination"]');
+    const paginationText = pagEl
+      ? String(pagEl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120)
+      : '';
+    const totalMatch = (paginationText || bodyText).match(/共\s*([0-9,，]+)\s*条/);
+    const listTotal = totalMatch
+      ? Number(String(totalMatch[1]).replace(/[,，]/g, ''))
+      : null;
+    const rows = [...document.querySelectorAll(
+      '.el-table__body tbody tr:not(.el-table__row--expanded), .el-table__body-wrapper tbody tr, table tbody tr',
+    )].filter((tr) => {
+      const el = tr;
+      if (!(el instanceof HTMLElement)) return false;
+      if (el.offsetParent === null && getComputedStyle(el).display === 'none') return false;
+      // 跳过空占位行
+      const text = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+      return text && !/暂无数据|没有数据/.test(text);
+    });
+    return {
+      listTotal: Number.isFinite(listTotal) ? listTotal : null,
+      visibleRowCount: Math.min(rows.length, 500),
+      paginationText,
+    };
+  }
+
   function collectPageSummary() {
     const labels = [...document.querySelectorAll('.el-form-item__label, label')]
       .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
@@ -1009,6 +1042,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       .map((el) => String(el.value || '').trim())
       .filter(Boolean)
       .slice(0, 4);
+    const listStats = collectListStats();
     return {
       title: document.title || '',
       hash: location.hash || '',
@@ -1018,7 +1052,34 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       breadcrumbs: crumbs,
       activeMenu,
       filledInputs: searchInputs,
+      ...listStats,
     };
+  }
+
+  /** 问「有多少条」时优先用 DOM 读数，避免模型敷衍 */
+  function tryAnswerPageDataQuestion(utterance, pageSummary) {
+    const text = String(utterance || '');
+    if (!/(多少|几条|有多少|多少条|几条数据)/.test(text)) return null;
+    const page = pageSummary && typeof pageSummary === 'object' ? pageSummary : {};
+    if (page.listTotal != null && Number.isFinite(Number(page.listTotal))) {
+      return `当前页面共 ${page.listTotal} 条数据。`;
+    }
+    if (page.paginationText && /共\s*[0-9]/.test(String(page.paginationText))) {
+      return `根据页面分页：${page.paginationText}`;
+    }
+    if (page.visibleRowCount != null && Number(page.visibleRowCount) > 0) {
+      return `当前列表可见 ${page.visibleRowCount} 行（若有分页，总数以页面「共 N 条」为准）。`;
+    }
+    if (page.visibleRowCount === 0) {
+      return '当前列表没有可见数据行（可能暂无数据，或列表尚未加载完）。';
+    }
+    return null;
+  }
+
+  function isWeakChatReply(reply) {
+    const text = String(reply || '').trim();
+    if (!text) return true;
+    return /^(我在[，,]?你可以继续说|嗯[，,]?我在|好的[。.!！]?|请再说清楚一点)/.test(text);
   }
 
   function stepLooksFailed(result) {
@@ -1135,15 +1196,23 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
   }
 
   function saidOpenOrEnter(text) {
-    return /打开|进入|发起|新建|帮我开|(?:^|[，,。；;])去/.test(String(text || ''));
+    return Intent.saidOpenOrEnter
+      ? Intent.saidOpenOrEnter(text)
+      : /打开|进入|发起|新建|帮我开|(?:^|[，,。；;])去/.test(String(text || ''));
+  }
+
+  function wantsOpenTodo(text) {
+    return Intent.wantsOpenTodo
+      ? Intent.wantsOpenTodo(text)
+      : /打开|进入/.test(String(text || '')) && /待办/.test(String(text || ''));
   }
 
   function filterActionableSteps(utterance, actions) {
-    const saidTodo = /待办/.test(String(utterance || ''));
+    const canOpenTodo = wantsOpenTodo(utterance);
     const canJump = saidOpenOrEnter(utterance);
     return (actions || []).filter((item) => {
       if (!item || !item.type || item.type === 'none') return false;
-      if (item.type === 'open_todo' && !saidTodo) return false;
+      if (item.type === 'open_todo' && !canOpenTodo) return false;
       if ((item.type === 'open_menu' || item.type === 'open_workflow') && !canJump) return false;
       return true;
     });
@@ -1153,12 +1222,12 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
   async function tryLocalOpenFromUtterance(utterance, settings) {
     const text = String(utterance || '').replace(/\s+/g, '');
     if (!text) return null;
-    if (!saidOpenOrEnter(text) && !/待办/.test(text)) return null;
+    if (!saidOpenOrEnter(text) && !wantsOpenTodo(text)) return null;
 
     if (Leave.looksLikeLeaveTask(utterance)) {
       return runLeaveAgent(utterance);
     }
-    if (/待办/.test(text)) {
+    if (wantsOpenTodo(text)) {
       return executeChatAction({ type: 'open_todo', query: '我的待办' }, utterance);
     }
 
@@ -1212,6 +1281,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     let plannedVia = 'extension';
     const history = options && Array.isArray(options.history) ? options.history : [];
     const pageSummary = collectPageSummary();
+    const localPageAnswer = tryAnswerPageDataQuestion(utterance, pageSummary);
 
     let chatOk = false;
     let chatError = '';
@@ -1253,6 +1323,18 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       }
     }
 
+    // 页面条数：DOM 能读到就用本地答案，避免模型空回或误跳页
+    if (localPageAnswer) {
+      reply = isWeakChatReply(reply) ? localPageAnswer : reply;
+      if (!/打开|进入|发起|新建/.test(String(utterance || ''))) {
+        actions = [{ type: 'none', query: '' }];
+      }
+      if (!chatOk) {
+        chatOk = true;
+        plannedVia = `${plannedVia}+page`;
+      }
+    }
+
     if (!chatOk && !reply) {
       throw new Error(
         chatError
@@ -1262,8 +1344,8 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
 
     let actionable = filterActionableSteps(utterance, actions);
 
-    // 模型只回了话、没给打开动作时：本地按关键字补开流程/菜单（关键词默认已含「打开/流程/菜单」）
-    if (!actionable.length && (saidOpenOrEnter(utterance) || /待办/.test(String(utterance || '')))) {
+    // 模型只回了话、没给打开动作时：本地按关键字补开流程/菜单（必须明确打开/进入）
+    if (!actionable.length && (saidOpenOrEnter(utterance) || wantsOpenTodo(utterance))) {
       const settings = await loadAiSettings();
       const local = await tryLocalOpenFromUtterance(utterance, settings);
       if (local) {

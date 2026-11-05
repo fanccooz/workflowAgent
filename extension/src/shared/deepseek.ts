@@ -88,29 +88,32 @@
     return out;
   }
 
+  function looksLikePageQuestion(utterance) {
+    const text = String(utterance || '');
+    return /[？?]|多少|几条|什么|吗|呢|当前页|这个页面|有多少|几条数据/.test(text);
+  }
+
   function looksLikePageOp(utterance) {
     const text = String(utterance || '');
-    return /打开|进入|发起|新建|待办|流程|菜单|模块|页面|筛选|过滤|搜索|查找|请假|出差|加班/.test(text);
+    return /打开|进入|发起|新建|待办|流程|菜单|模块|页面|筛选|过滤|搜索|查找|请假|出差|加班/.test(text)
+      || looksLikePageQuestion(text);
   }
 
   function buildChatMessages(utterance, history, pageSummary) {
     const system = [
       '你是目标信息平台里的中文助手，可以正常闲聊，也可以办事。',
-      '必须结合「最近对话」理解指代与追问（那个/刚才/继续/同上），不要当每句都是新会话。',
-      '【打开 vs 搜索】必须严格区分：',
-      '- 「打开/进入/发起/新建」= 跳转打开页面：流程→open_workflow，菜单/模块/页面→open_menu，待办→open_todo。',
-      '- 「搜索/筛选/过滤/查找」= 只在当前页面做列表搜索：只能 filter_list，query 放关键字；禁止因此打开待办或其他页面。',
-      '闲聊问候问答：type=none，自然回复，不要追问页面。',
-      '硬性：没说打开/进入/发起/新建/待办时，禁止 open_menu、open_workflow、open_todo。',
-      '硬性：只说搜索/筛选时，只输出 filter_list，不要问「在哪个页面」。',
-      '一句话里既打开又搜索：先打开再 filter_list，按顺序多个 actions。',
-      '只输出一个 JSON 对象，不要 Markdown。格式：',
+      '必须结合「最近对话」理解指代与追问，不要当每句都是新会话。',
+      '【打开 vs 搜索】',
+      '- 「打开/进入/发起/新建」= 跳转打开页面。',
+      '- 「搜索/筛选/过滤/查找」= 只在当前页 filter_list，禁止因此跳页。',
+      '【回答页面问题】用户问「有多少条/当前页数据」时：type=none，根据页面摘要里的 listTotal / visibleRowCount / paginationText 直接回答；禁止敷衍「我在，你可以继续说」。',
+      '问句里提到「待办」但没有说打开/进入 → 不要 open_todo，只回答问题。',
+      '闲聊问候：type=none，自然回复。',
+      '硬性：没说打开/进入/发起/新建时禁止跳页；只搜索时只 filter_list。',
+      '只输出一个 JSON 对象。格式：',
       '{"reply":"给用户看的话","actions":[{"type":"none|leave.open_fill|open_workflow|open_menu|open_todo|filter_list","query":"短句"}]}',
-      '示例：',
-      '「打开请假流程」→ open_workflow；「打开流程定义」→ open_menu；「进入人事」→ open_menu。',
-      '「搜索备注有吃的」→ 仅 filter_list(query=吃)；「筛选通用流程」→ 仅 filter_list。',
-      '「打开我的待办，再搜索请假」→ open_todo + filter_list。',
-      'query 要短，便于本地匹配。',
+      '示例：「当前页面有多少条数据？」且摘要 listTotal=12 → {"reply":"当前页面共 12 条数据。","actions":[{"type":"none","query":""}]}',
+      '「打开请假流程」→ open_workflow；「搜索备注有吃的」→ filter_list。',
     ].join('');
 
     const messages = [{ role: 'system', content: system }];
@@ -120,9 +123,11 @@
     }
     const page = pageSummary && typeof pageSummary === 'object' ? pageSummary : null;
     const parts = [`用户本轮说：${String(utterance || '').trim()}`];
-    // 闲聊不塞页面摘要，避免模型总往「办事」上靠
     if (page && looksLikePageOp(utterance)) {
       parts.push(`当前页面摘要：${JSON.stringify(page)}`);
+      if (looksLikePageQuestion(utterance)) {
+        parts.push('请根据页面摘要回答用户问题，reply 必须包含具体答案。');
+      }
     }
     if (prior.length) parts.push('请务必结合上面的最近对话作答。');
     messages.push({ role: 'user', content: parts.join('\n') });
