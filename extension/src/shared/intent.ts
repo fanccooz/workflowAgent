@@ -139,7 +139,31 @@
     return JSON.parse(jsonText);
   }
 
-  const CHAT_ACTIONS = ['none', 'leave.open_fill', 'open_workflow', 'open_menu', 'open_todo', 'filter_list'];
+  const CHAT_ACTIONS = [
+    'none',
+    'leave.open_fill',
+    'open_workflow',
+    'open_menu',
+    'open_todo',
+    'filter_list',
+    'click_ui',
+    'panel_minimize',
+  ];
+
+  const COMMON_PAGE_BUTTONS = [
+    '查看草稿',
+    '选择草稿',
+    '保存草稿',
+    '提交',
+    '确定',
+    '确认',
+    '取消',
+    '查询',
+    '搜索',
+    '重置',
+    '新建',
+    '关闭',
+  ];
 
   function cleanOneAction(raw) {
     const actionRaw = raw && typeof raw === 'object' ? raw : {};
@@ -151,8 +175,149 @@
     };
   }
 
-  /** 只校验动作类型；summary 由模型自设，本地原样保留 */
-  function sanitizeChatAction(raw) {
+  function extractOpenTarget(text) {
+    let raw = String(text || '').replace(/\s+/g, '');
+    raw = raw.replace(/^(你好|您好)[，,！!]?/, '');
+    raw = raw.replace(/^(我)?(想要|想|要)?/, '');
+    raw = raw.replace(/^(请)?(帮我|帮忙)?/, '');
+    raw = raw.replace(/^(打开|进入|发起|新建|去)/, '');
+    return raw.trim();
+  }
+
+  /** 用户说「打开」时，禁止模型改成当前页搜索 */
+  function enforceOpenVsSearch(utterance, actions) {
+    const text = String(utterance || '').replace(/\s+/g, '');
+    let list = Array.isArray(actions) ? actions.slice() : [];
+    if (!text) return list;
+
+    const saidSearch = /搜索|筛选|过滤|查找/.test(text);
+    const saidOpen = /打开|进入|发起|新建|帮我开|(?:^|[，,。；;])去/.test(text);
+    const saidMenu = /菜单|模块|页面|导航|流程定义/.test(text);
+    const saidTodo = /待办/.test(text);
+    const saidWorkflow = /流程|申请|填表|填写/.test(text) || (!saidMenu && !saidTodo && saidOpen);
+
+    // 纯搜索：只留 filter_list
+    if (saidSearch && !saidOpen) {
+      const filters = list.filter((item) => item.type === 'filter_list');
+      if (filters.length) return filters;
+      const keyword = extractOpenTarget(text.replace(/^(搜索|筛选|过滤|查找)/, ''));
+      return keyword ? [{ type: 'filter_list', query: keyword }] : list;
+    }
+
+    // 明确打开：不允许只剩 filter_list
+    if (saidOpen) {
+      const hasOpen = list.some((item) => (
+        item.type === 'open_workflow'
+        || item.type === 'open_menu'
+        || item.type === 'open_todo'
+        || item.type === 'leave.open_fill'
+      ));
+      if (!hasOpen) {
+        const target = extractOpenTarget(text);
+        if (saidTodo) {
+          list = [{ type: 'open_todo', query: target || '我的待办' }];
+        } else if (saidMenu) {
+          // 「打开流程定义」等菜单名里虽有「流程」，仍走菜单
+          list = [{ type: 'open_menu', query: target }];
+        } else {
+          list = [{ type: 'open_workflow', query: target || text }];
+        }
+      } else {
+        // 打开意图下丢掉误加的纯筛选（除非同时还说了搜索）
+        if (!saidSearch) {
+          list = list.filter((item) => item.type !== 'filter_list');
+        }
+      }
+    }
+    return list.length ? list : [{ type: 'none', query: '' }];
+  }
+
+  function extractClickTarget(text) {
+    const raw = String(text || '').replace(/\s+/g, '');
+    const patterns = [
+      /帮我点(?:击|开|一下)?[「『"']?([^」』"']{1,20})/,
+      /点击[「『"']?([^」』"']{1,20})/,
+      /点一下[「『"']?([^」』"']{1,20})/,
+      /点开[「『"']?([^」』"']{1,20})/,
+    ];
+    for (const pattern of patterns) {
+      const hit = raw.match(pattern);
+      if (hit && hit[1]) return hit[1].replace(/按钮|链接$/, '').trim();
+    }
+    return '';
+  }
+
+  function wantsPanelMinimize(text) {
+    const raw = String(text || '').replace(/\s+/g, '');
+    return /(最小化|收起|关掉|关闭)/.test(raw) && /(助手|面板|窗口|流程助手)/.test(raw);
+  }
+
+  function enforceClickIntent(utterance, actions) {
+    const text = String(utterance || '').replace(/\s+/g, '');
+    let list = Array.isArray(actions) ? actions.slice() : [];
+    if (wantsPanelMinimize(text)) {
+      return [{ type: 'panel_minimize', query: '' }];
+    }
+    // 「帮我提交 / 保存草稿 / 查看草稿」等直接点
+    for (const btn of COMMON_PAGE_BUTTONS) {
+      if (text.includes(btn) && /(帮我|请|点|一下|吧|提交吧|保存)/.test(text)) {
+        const has = list.some((item) => item.type === 'click_ui' && String(item.query || '').includes(btn));
+        if (!has && (/(帮我点|点击|点开|点一下)/.test(text) || text === btn || text.endsWith(btn) || new RegExp(`(帮我|请)?${btn}`).test(text))) {
+          if (/(帮我|请|点|提交|保存)/.test(text)) {
+            return [{ type: 'click_ui', query: btn }];
+          }
+        }
+      }
+    }
+    if (!/(帮我点|点击|点一下|点开|帮我提交|提交吧|保存草稿)/.test(text)) return list;
+    const hasClick = list.some((item) => item.type === 'click_ui' || item.type === 'panel_minimize');
+    if (hasClick) return list;
+    const target = extractClickTarget(text);
+    if (target) return [{ type: 'click_ui', query: target }];
+    if (/提交/.test(text)) return [{ type: 'click_ui', query: '提交' }];
+    if (/保存草稿/.test(text)) return [{ type: 'click_ui', query: '保存草稿' }];
+    return list;
+  }
+
+  /** 从 summary / reply 捞出模型已想好的点击，补进 actions（避免只说不做） */
+  function hydrateClicksFromModel(reply, summary, actions) {
+    let list = Array.isArray(actions) ? actions.slice() : [];
+    const hasReal = list.some((item) => item.type && item.type !== 'none');
+    if (hasReal) return list;
+
+    const clicks = [];
+    const push = (name) => {
+      const q = String(name || '').replace(/\s+/g, '').trim();
+      if (!q || q.length > 20) return;
+      if (clicks.includes(q)) return;
+      clicks.push(q);
+    };
+
+    const fromSummary = summary && typeof summary === 'object'
+      ? (summary.nextClicks || summary.clicks || summary.buttons)
+      : null;
+    if (Array.isArray(fromSummary)) {
+      fromSummary.forEach((item) => push(item));
+    }
+
+    const text = String(reply || '');
+    const quoted = text.matchAll(/(?:帮你|已经|已|先)?(?:点开|点击|点一下|点了|点)\s*[「『"']([^」』"']{1,20})[」』"']/g);
+    for (const hit of quoted) {
+      if (hit[1]) push(hit[1]);
+    }
+    // reply 里列举的常见按钮且带操作语气
+    if (/(帮你点|已点|点开|点击|需要我帮你点)/.test(text)) {
+      for (const btn of COMMON_PAGE_BUTTONS) {
+        if (text.includes(btn)) push(btn);
+      }
+    }
+
+    if (!clicks.length) return list;
+    return clicks.map((query) => ({ type: 'click_ui', query }));
+  }
+
+  /** 校验动作类型；summary 由模型自设；打开/搜索冲突时按关键词纠正 */
+  function sanitizeChatAction(raw, utterance) {
     const data = raw && typeof raw === 'object' ? raw : {};
     let actions = [];
     if (Array.isArray(data.actions) && data.actions.length) {
@@ -162,12 +327,29 @@
     } else {
       actions = [{ type: 'none', query: '' }];
     }
-    if (!actions.length) actions = [{ type: 'none', query: '' }];
-    const first = actions[0] || { type: 'none', query: '' };
-    const reply = String(data.reply || data.message || '').trim();
     const summary = data.summary && typeof data.summary === 'object' && !Array.isArray(data.summary)
       ? data.summary
       : null;
+    let reply = String(data.reply || data.message || '').trim();
+
+    actions = enforceOpenVsSearch(utterance || '', actions);
+    actions = enforceClickIntent(utterance || '', actions);
+    actions = hydrateClicksFromModel(reply, summary, actions);
+    if (!actions.length) actions = [{ type: 'none', query: '' }];
+    const first = actions[0] || { type: 'none', query: '' };
+    const actionable = actions.filter((item) => item.type && item.type !== 'none');
+    // 纠正后若变成打开，避免还显示「帮你筛选」类回复
+    if (first.type === 'open_workflow' && /筛|搜索|过滤/.test(reply) && /打开|发起|新建/.test(String(utterance || ''))) {
+      const q = first.query || extractOpenTarget(utterance);
+      reply = q ? `好的，正在打开「${q}」。` : '好的，正在打开流程。';
+    }
+    if (first.type === 'panel_minimize') {
+      reply = '好的，已最小化流程助手。';
+    }
+    // 没有可执行动作时，禁止假装「已点开/已打开/已最小化」
+    if (!actionable.length && /已(帮你)?(点开|打开|点击|提交|写入|筛选|最小化)/.test(reply)) {
+      reply = '我还没有真正操作页面。请直接说要点的按钮，例如「帮我点查看草稿」或「帮我点提交」。';
+    }
     return {
       reply: reply || '好的。',
       action: first,
@@ -242,6 +424,7 @@ export {DEFAULT_KEYWORDS,
     findById,
     sanitizeDecision,
     sanitizeChatAction,
+    enforceOpenVsSearch,
     sanitizeReflect,
     sanitizeFillMap,
     parseModelJson,};

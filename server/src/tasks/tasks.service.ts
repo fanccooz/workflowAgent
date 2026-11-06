@@ -43,8 +43,7 @@ export class TasksService {
         query: step.query,
       })),
     );
-    this.db.insertChatEvent(userId, 'user', text);
-    if (planned.reply) this.db.insertChatEvent(userId, 'assistant', planned.reply);
+    // 对话记录只由 /api/events/chat（扩展面板 reportChat）写入，避免与 plan 重复各存一条
 
     return {
       runId: run.id,

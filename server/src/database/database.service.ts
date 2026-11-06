@@ -59,14 +59,14 @@ export class DatabaseService implements OnModuleInit {
         warom_user_id TEXT NOT NULL,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
       );
       CREATE INDEX IF NOT EXISTS idx_chat_events_user_created
         ON chat_events (warom_user_id, created_at DESC);
       CREATE TABLE IF NOT EXISTS suggestion_cache (
         warom_user_id TEXT PRIMARY KEY,
         suggestion TEXT NOT NULL DEFAULT '',
-        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
         based_on_event_id INTEGER
       );
       CREATE TABLE IF NOT EXISTS task_runs (
@@ -75,8 +75,8 @@ export class DatabaseService implements OnModuleInit {
         utterance TEXT NOT NULL,
         reply TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'planned',
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
       );
       CREATE INDEX IF NOT EXISTS idx_task_runs_user_created
         ON task_runs (warom_user_id, created_at DESC);
@@ -88,8 +88,8 @@ export class DatabaseService implements OnModuleInit {
         query TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'pending',
         result_message TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
         UNIQUE(run_id, seq)
       );
       CREATE INDEX IF NOT EXISTS idx_task_steps_run_seq
@@ -98,11 +98,24 @@ export class DatabaseService implements OnModuleInit {
   }
 
   insertChatEvent(waromUserId: string, role: ChatRole, content: string): ChatEventRow {
+    const text = String(content || '').trim();
+    // 防抖：同一用户、同一角色、相同内容在数秒内只保留一条
+    const recent = this.db
+      .prepare(
+        `SELECT * FROM chat_events
+         WHERE warom_user_id = ? AND role = ? AND content = ?
+           AND created_at >= datetime('now', 'localtime', '-8 seconds')
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(waromUserId, role, text) as unknown as ChatEventRow | undefined;
+    if (recent) return recent;
+
     this.db
       .prepare(
-        `INSERT INTO chat_events (warom_user_id, role, content) VALUES (?, ?, ?)`,
+        `INSERT INTO chat_events (warom_user_id, role, content, created_at)
+         VALUES (?, ?, ?, datetime('now', 'localtime'))`,
       )
-      .run(waromUserId, role, content);
+      .run(waromUserId, role, text);
     const row = this.db
       .prepare(`SELECT * FROM chat_events WHERE warom_user_id = ? ORDER BY id DESC LIMIT 1`)
       .get(waromUserId) as unknown as ChatEventRow;
@@ -154,7 +167,7 @@ export class DatabaseService implements OnModuleInit {
     this.db
       .prepare(
         `INSERT INTO suggestion_cache (warom_user_id, suggestion, updated_at, based_on_event_id)
-         VALUES (?, ?, datetime('now'), ?)
+         VALUES (?, ?, datetime('now', 'localtime'), ?)
          ON CONFLICT(warom_user_id) DO UPDATE SET
            suggestion = excluded.suggestion,
            updated_at = excluded.updated_at,
@@ -166,8 +179,8 @@ export class DatabaseService implements OnModuleInit {
   createTaskRun(waromUserId: string, utterance: string, reply: string): TaskRunRow {
     this.db
       .prepare(
-        `INSERT INTO task_runs (warom_user_id, utterance, reply, status)
-         VALUES (?, ?, ?, 'planned')`,
+        `INSERT INTO task_runs (warom_user_id, utterance, reply, status, created_at, updated_at)
+         VALUES (?, ?, ?, 'planned', datetime('now', 'localtime'), datetime('now', 'localtime'))`,
       )
       .run(waromUserId, utterance, reply);
     return this.db
@@ -180,7 +193,8 @@ export class DatabaseService implements OnModuleInit {
     steps: Array<{ seq: number; type: string; query: string }>,
   ): TaskStepRow[] {
     const insert = this.db.prepare(
-      `INSERT INTO task_steps (run_id, seq, type, query, status) VALUES (?, ?, ?, ?, 'pending')`,
+      `INSERT INTO task_steps (run_id, seq, type, query, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'pending', datetime('now', 'localtime'), datetime('now', 'localtime'))`,
     );
     for (const step of steps) {
       insert.run(runId, step.seq, step.type, step.query || '');
@@ -203,7 +217,7 @@ export class DatabaseService implements OnModuleInit {
   updateTaskRunStatus(runId: number, status: TaskRunStatus) {
     this.db
       .prepare(
-        `UPDATE task_runs SET status = ?, updated_at = datetime('now') WHERE id = ?`,
+        `UPDATE task_runs SET status = ?, updated_at = datetime('now', 'localtime') WHERE id = ?`,
       )
       .run(status, runId);
   }
@@ -217,7 +231,7 @@ export class DatabaseService implements OnModuleInit {
     this.db
       .prepare(
         `UPDATE task_steps
-         SET status = ?, result_message = ?, updated_at = datetime('now')
+         SET status = ?, result_message = ?, updated_at = datetime('now', 'localtime')
          WHERE run_id = ? AND seq = ?`,
       )
       .run(status, resultMessage || '', runId, seq);

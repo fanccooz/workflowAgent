@@ -6,7 +6,9 @@ export type ChatActionType =
   | 'open_workflow'
   | 'open_menu'
   | 'open_todo'
-  | 'filter_list';
+  | 'filter_list'
+  | 'click_ui'
+  | 'panel_minimize';
 
 export interface ChatAction {
   type: ChatActionType;

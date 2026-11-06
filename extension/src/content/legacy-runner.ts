@@ -509,6 +509,9 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
 
   async function openCandidate(item) {
     if (!item) return { status: 'error', message: '没有可打开的项。' };
+    if (item.kind === 'click' || String(item.id || '').startsWith('click:')) {
+      return clickUiByLabel(item.title || item.query || '', item.title || '');
+    }
     if (item.type === 'workflow') {
       return openWorkflowRow({
         name: item.name || item.title,
@@ -778,9 +781,9 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     const raw = String(response.content || '').trim();
     try {
       const parsed = Intent.parseModelJson(raw);
-      return Intent.sanitizeChatAction(parsed);
+      return Intent.sanitizeChatAction(parsed, utterance);
     } catch (error) {
-      // 模型偶尔不按 JSON 回：当普通文本回复，不再本地猜意图
+      // 模型偶尔不按 JSON 回：当普通文本回复，再用关键词纠正打开/搜索
       const plain = raw
         .replace(/^```(?:json)?\s*/i, '')
         .replace(/\s*```$/i, '')
@@ -788,7 +791,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       return Intent.sanitizeChatAction({
         reply: plain || '模型返回格式异常，请再说一次。',
         actions: [{ type: 'none', query: '' }],
-      });
+      }, utterance);
     }
   }
 
@@ -1091,6 +1094,89 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     await delay(400);
   }
 
+  /** 点击当前页/弹窗可见按钮/链接（按文案模糊匹配） */
+  async function clickUiByLabel(keyword, utterance) {
+    const key = String(keyword || '').replace(/\s+/g, '').trim()
+      || String(utterance || '').replace(/\s+/g, '').replace(/^(请)?(帮我)?(点击|点开|点一下|点)/, '').trim();
+    if (!key) {
+      return {
+        status: 'error',
+        message: '没有要点的按钮名。可以说「帮我点查看草稿」。',
+        choices: [],
+      };
+    }
+
+    // 弹窗优先：草稿/提交按钮多半在 dialog 里
+    const dialogs = visibleDialogs();
+    const roots = dialogs.length ? dialogs : [document];
+    const nodes = [];
+    for (const root of roots) {
+      nodes.push(
+        ...root.querySelectorAll(
+          'button, a, .el-button, [role="button"], .el-link, span.el-link, .el-dropdown-menu__item, li.el-select-dropdown__item',
+        ),
+      );
+    }
+    if (dialogs.length) {
+      // 再补一层页面主区，避免漏掉非弹窗按钮
+      nodes.push(
+        ...document.querySelectorAll(
+          'button, a, .el-button, [role="button"], .el-link',
+        ),
+      );
+    }
+    const unique = [...new Set(nodes)].filter((el) => isVisibleEl(el) && !isInSidebar(el));
+    const scored = unique.map((el) => {
+      const text = String(el.innerText || el.textContent || el.getAttribute('aria-label') || '')
+        .replace(/\s+/g, '')
+        .trim();
+      if (!text) return { el, text, score: 0 };
+      let score = 0;
+      if (text === key) score = 100;
+      else if (text.includes(key) || key.includes(text)) score = 80;
+      else if (text.length >= 2 && key.includes(text.slice(0, Math.min(4, text.length)))) score = 40;
+      // 弹窗内按钮优先
+      if (score > 0 && el.closest && el.closest('.el-dialog, .el-overlay-dialog, [role="dialog"]')) {
+        score += 8;
+      }
+      return { el, text, score };
+    }).filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.text.length - b.text.length);
+
+    if (!scored.length) {
+      return {
+        status: 'error',
+        message: `当前页没找到可点的「${key}」。请确认按钮已显示，或再说准确名称。`,
+        choices: [],
+      };
+    }
+
+    const top = scored.filter((item) => item.score >= scored[0].score - 10).slice(0, 6);
+    if (top.length > 1 && scored[0].score < 100) {
+      return {
+        status: 'choose',
+        message: `找到多个相近按钮，请选一个：\n${top.map((item) => `- ${item.text}`).join('\n')}`,
+        choices: top.map((item, index) => ({
+          type: 'menu',
+          id: `click:${index}:${item.text}`,
+          title: item.text,
+          subtitle: '点击按钮',
+          openable: true,
+          kind: 'click',
+        })),
+      };
+    }
+
+    const hit = scored[0];
+    hit.el.click();
+    await delay(280);
+    return {
+      status: 'open',
+      message: `已点击「${hit.text}」。`,
+      choices: [],
+    };
+  }
+
   /** 通用列表筛选：不绑定待办，适用于任意已打开的列表/查询页 */
   async function applyListFilter(keyword, utterance) {
     const key = normalizeFilterKeyword(keyword, utterance);
@@ -1168,6 +1254,17 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     }
     if (type === 'filter_list') {
       return applyListFilter(normalizeFilterKeyword(query, utterance), utterance);
+    }
+    if (type === 'click_ui') {
+      return clickUiByLabel(query, utterance);
+    }
+    if (type === 'panel_minimize') {
+      return {
+        status: 'panel',
+        message: '已最小化流程助手。',
+        panelAction: 'minimize',
+        choices: [],
+      };
     }
     return { status: 'chat', message: '', choices: [] };
   }

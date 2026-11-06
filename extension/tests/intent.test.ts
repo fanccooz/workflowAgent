@@ -107,16 +107,73 @@ it('对话动作清洗：模型给的打开/搜索动作原样保留', () => {
   const open = sanitizeChatAction({
     reply: '好的',
     actions: [{ type: 'open_menu', query: '流程定义' }],
-  });
+  }, '打开流程定义');
   assert.deepEqual(open.actions.map((item) => item.type), ['open_menu']);
 
   const search = sanitizeChatAction({
     reply: '好的',
     actions: [{ type: 'filter_list', query: '吃' }],
-  });
+  }, '搜索吃');
   assert.deepEqual(search.actions.map((item) => [item.type, item.query]), [
     ['filter_list', '吃'],
   ]);
+});
+
+it('打开通用流程不能被改成筛选', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '我帮你在本页筛出通用流程。',
+      actions: [{ type: 'filter_list', query: '通用流程' }],
+    },
+    '你好，我想打开通用流程',
+  );
+  assert.equal(chat.action.type, 'open_workflow');
+  assert.match(chat.action.query, /通用流程/);
+  assert.equal(chat.actions.some((item) => item.type === 'filter_list'), false);
+});
+
+it('帮我点查看草稿应产出 click_ui', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '已帮你点开查看草稿',
+      actions: [{ type: 'none', query: '' }],
+    },
+    '帮我点查看草稿',
+  );
+  assert.equal(chat.action.type, 'click_ui');
+  assert.equal(chat.action.query, '查看草稿');
+});
+
+it('没有动作时不能假装已点开', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '草稿填好后可以直接提交。',
+      actions: [{ type: 'none', query: '' }],
+    },
+    '草稿怎么提交',
+  );
+  assert.equal(chat.action.type, 'none');
+});
+
+it('模型只口头说要点击时，从 reply 补 click_ui', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '已帮你点开「查看草稿」。',
+      summary: { nextClicks: ['查看草稿'] },
+      actions: [{ type: 'none', query: '' }],
+    },
+    '下一步呢',
+  );
+  assert.equal(chat.action.type, 'click_ui');
+  assert.equal(chat.action.query, '查看草稿');
+});
+
+it('最小化流程助手', () => {
+  const chat = sanitizeChatAction(
+    { reply: '好的', actions: [{ type: 'none', query: '' }] },
+    '最小化流程助手',
+  );
+  assert.equal(chat.action.type, 'panel_minimize');
 });
 
 it('填表映射只保留页面上的字段 label', () => {

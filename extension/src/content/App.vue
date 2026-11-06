@@ -355,6 +355,11 @@ async function send() {
     if (response?.status === 'choose') {
       choices.value = Array.isArray(response.choices) ? response.choices : [];
     }
+    const wantMinimize = response?.panelAction === 'minimize'
+      || (Array.isArray(response?.actions) && response.actions.some((item: { type?: string }) => item?.type === 'panel_minimize'));
+    if (wantMinimize) {
+      setOpen(false);
+    }
     applyConfirmUi(response);
     maybeFillHabitSuggestion({ refresh: true, announce: false });
   } catch (error) {
