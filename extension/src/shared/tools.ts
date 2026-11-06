@@ -1,51 +1,18 @@
 // @ts-nocheck
 import * as LeaveSkill from './leave';
 import * as AgentApi from './agent';
-
-  const LIST_HASH = '#/workflow/workflow-base/agent';
-
-  function delay(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  function waitFor(predicate, timeout) {
-    const limit = timeout == null ? 10000 : timeout;
-    return new Promise((resolve, reject) => {
-      const start = Date.now();
-      const timer = setInterval(() => {
-        let value = null;
-        try {
-          value = predicate();
-        } catch (error) {
-          value = null;
-        }
-        if (value) {
-          clearInterval(timer);
-          resolve(value);
-        } else if (Date.now() - start > limit) {
-          clearInterval(timer);
-          reject(new Error('等待页面超时'));
-        }
-      }, 200);
-    });
-  }
-
-  function visibleDialogs() {
-    return [...document.querySelectorAll('.el-dialog')].filter((dialog) => {
-      const wrap = dialog.closest('.el-dialog__wrapper');
-      return wrap && getComputedStyle(wrap).display !== 'none';
-    });
-  }
-
-  function isWorkflowLaunchDialog(dialog) {
-    const text = dialog.innerText || '';
-    return /基础信息/.test(text) && (/提\s*交/.test(text) || /取\s*消/.test(text));
-  }
-
-  function tableLoadFailed() {
-    const text = (document.body && document.body.innerText) || '';
-    return text.includes('加载异常');
-  }
+import { LIST_HASH } from './types';
+import {
+  delay,
+  waitFor,
+  visibleDialogs,
+  isWorkflowLaunchDialog,
+  tableLoadFailed,
+  findVueInstance,
+  setNativeValue,
+  readInputValue,
+  valueLooksSet,
+} from './dom';
 
   function hasAgRows() {
     return document.querySelectorAll('.ag-center-cols-container .ag-row').length > 0;
@@ -148,60 +115,6 @@ import * as AgentApi from './agent';
       }
     }
     return null;
-  }
-
-  function findVueInstance(el) {
-    let node = el;
-    for (let i = 0; i < 10 && node; i += 1) {
-      if (node.__vue__) return node.__vue__;
-      node = node.parentElement;
-    }
-    return null;
-  }
-
-  function setNativeValue(el, value) {
-    if (!el) return false;
-    const text = String(value);
-    try {
-      el.focus();
-    } catch (error) {
-      // 忽略不可 focus
-    }
-    // 日期框常带 readonly，先临时去掉才能写入
-    const wasReadonly = el.readOnly;
-    if (wasReadonly) el.readOnly = false;
-    const proto = el.tagName === 'TEXTAREA'
-      ? window.HTMLTextAreaElement.prototype
-      : window.HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value');
-    if (setter && setter.set) setter.set.call(el, text);
-    else el.value = text;
-    try {
-      el.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        cancelable: true,
-        data: text,
-        inputType: 'insertText',
-      }));
-    } catch (error) {
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    el.dispatchEvent(new Event('blur', { bubbles: true }));
-    if (wasReadonly) el.readOnly = true;
-    return true;
-  }
-
-  function readInputValue(el) {
-    if (!el) return '';
-    return String(el.value || el.getAttribute('value') || '').trim();
-  }
-
-  function valueLooksSet(actual, expected) {
-    if (!actual || !expected) return false;
-    const a = String(actual).replace(/\s+/g, '');
-    const b = String(expected).replace(/\s+/g, '');
-    return a === b || a.includes(b) || b.includes(a.slice(0, 10));
   }
 
   function dateFormatVariants(ymd) {
@@ -714,19 +627,15 @@ import * as AgentApi from './agent';
   }
 
 export {
-LIST_HASH,
-    observePage,
-    gotoWorkflowList,
-    clickRefreshList,
-    collectDialogFields,
-    fillByLabelMap,
-    fillLeaveForm,
-    aiFillForm,
-    checkRequired,
-    extractLeaveSlots,
-    submitWorkflow,
-    runTool,
-    runAgentLoop,
-    visibleDialogs,
-    isWorkflowLaunchDialog,
+  observePage,
+  gotoWorkflowList,
+  collectDialogFields,
+  fillByLabelMap,
+  fillLeaveForm,
+  aiFillForm,
+  checkRequired,
+  extractLeaveSlots,
+  submitWorkflow,
+  runTool,
+  runAgentLoop,
 };

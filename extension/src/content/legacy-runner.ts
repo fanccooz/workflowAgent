@@ -5,46 +5,20 @@ import * as Leave from '@/shared/leave';
 import * as Agent from '@/shared/agent';
 import * as Tools from '@/shared/tools';
 import * as Habits from '@/shared/habits';
-import { MSG } from '@/shared/types';
-
-const LIST_HASH = '#/workflow/workflow-base/agent';
-
-  function delay(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  function waitFor(predicate, timeout = 10000) {
-    return new Promise((resolve, reject) => {
-      const start = Date.now();
-      const timer = setInterval(() => {
-        let value = null;
-        try {
-          value = predicate();
-        } catch (error) {
-          value = null;
-        }
-        if (value) {
-          clearInterval(timer);
-          resolve(value);
-        } else if (Date.now() - start > timeout) {
-          clearInterval(timer);
-          reject(new Error('等待页面超时'));
-        }
-      }, 200);
-    });
-  }
-
-  function visibleDialogs() {
-    return [...document.querySelectorAll('.el-dialog')].filter((dialog) => {
-      const wrap = dialog.closest('.el-dialog__wrapper');
-      return wrap && getComputedStyle(wrap).display !== 'none';
-    });
-  }
-
-  function tableLoadFailed() {
-    const text = (document.body && document.body.innerText) || '';
-    return text.includes('加载异常');
-  }
+import { MSG, LIST_HASH } from '@/shared/types';
+import {
+  delay,
+  waitFor,
+  visibleDialogs,
+  isWorkflowLaunchDialog,
+  tableLoadFailed,
+  isInSidebar,
+  isVisibleEl,
+  findVueInstance,
+  setNativeValue,
+  readInputValue,
+  valueLooksSet,
+} from '@/shared/dom';
 
   function headerFields() {
     const map = {};
@@ -188,11 +162,6 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
       location.hash = LIST_HASH;
     }
     return true;
-  }
-
-  function isWorkflowLaunchDialog(dialog) {
-    const text = dialog.innerText || '';
-    return /基础信息/.test(text) && (/提\s*交/.test(text) || /取\s*消/.test(text));
   }
 
   async function suppressAutoOpenFromUrl() {
@@ -795,74 +764,8 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     }
   }
 
-  function setNativeValue(el, value) {
-    if (!el) return false;
-    const text = String(value);
-    try {
-      el.focus();
-    } catch (error) {
-      // 忽略
-    }
-    const wasReadonly = el.readOnly;
-    if (wasReadonly) el.readOnly = false;
-    const proto = el.tagName === 'TEXTAREA'
-      ? window.HTMLTextAreaElement.prototype
-      : window.HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value');
-    if (setter && setter.set) setter.set.call(el, text);
-    else el.value = text;
-    try {
-      el.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        cancelable: true,
-        data: text,
-        inputType: 'insertText',
-      }));
-    } catch (error) {
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    el.dispatchEvent(new Event('blur', { bubbles: true }));
-    if (wasReadonly) el.readOnly = true;
-    return true;
-  }
-
   function normalizeFilterLabel(text) {
     return String(text || '').replace(/\s+/g, '').replace(/[:：*＊]/g, '');
-  }
-
-  function isInSidebar(el) {
-    return Boolean(el && el.closest('.el-aside, .sidebar, .el-menu, .layout-sider, .left-menu, #warom-agent-host, #wf-agent-host'));
-  }
-
-  function isVisibleEl(el) {
-    if (!el || el.disabled) return false;
-    if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') return false;
-    const style = getComputedStyle(el);
-    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
-  }
-
-  function findVueInstance(el) {
-    let node = el;
-    for (let i = 0; i < 12 && node; i += 1) {
-      if (node.__vue__) return node.__vue__;
-      node = node.parentElement;
-    }
-    return null;
-  }
-
-  function readInputValue(el) {
-    if (!el) return '';
-    const wrap = el.closest('.el-select, .el-input, .el-textarea') || el;
-    const shown = wrap.querySelector('.el-input__inner, input, textarea') || el;
-    return String(shown.value || shown.getAttribute('value') || wrap.innerText || '').trim();
-  }
-
-  function valueLooksSet(actual, expected) {
-    if (!actual || !expected) return false;
-    const a = String(actual).replace(/\s+/g, '');
-    const b = String(expected).replace(/\s+/g, '');
-    return a === b || a.includes(b) || b.includes(a);
   }
 
   async function writeFilterInput(input, key) {
@@ -1292,10 +1195,6 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     };
   }
 
-  function collectPageSummary() {
-    return collectPageRaw();
-  }
-
   function stepLooksFailed(result) {
     if (!result) return true;
     return result.status === 'error' || result.status === 'none' || result.status === 'disabled';
@@ -1332,7 +1231,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
           runId,
           seq,
           last.message || last.status,
-          collectPageSummary(),
+          collectPageRaw(),
           history,
         );
         if (advice && advice.decision === 'retry') {
@@ -1542,7 +1441,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
         return await planAndRunUtterance(utterance, options);
       } catch (error) {
         const fallbackNote = `（智能规划失败：${error.message || '调用失败'}，已改用本地处理）`;
-        if (true && Leave.looksLikeLeaveTask(utterance)) {
+        if (Leave.looksLikeLeaveTask(utterance)) {
           const local = await runLeaveAgent(utterance);
           return { ...local, message: `${local.message}\n${fallbackNote}` };
         }
@@ -1550,7 +1449,7 @@ const LIST_HASH = '#/workflow/workflow-base/agent';
     }
 
     // 未配置 AI：请假填表走本地 Agent
-    if (true && Leave.looksLikeLeaveTask(utterance)) {
+    if (Leave.looksLikeLeaveTask(utterance)) {
       return runLeaveAgent(utterance);
     }
 
@@ -1658,7 +1557,5 @@ export {
   confirmLeaveSubmit,
   openCandidate,
   suppressAutoOpenFromUrl,
-  delay,
-  waitFor,
 };
 

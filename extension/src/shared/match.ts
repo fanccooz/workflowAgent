@@ -1,9 +1,8 @@
 // @ts-nocheck
+import { SITE_PREFIX, LIST_HASH as OPEN_HASH } from './types';
 
   // 多字客套话按从长到短去掉，避免短词先截断长词。
   const MULTI_FILLERS = ['填一张', '帮忙', '我想', '想要', '我要', '打开', '发起', '新建', '填写', '一下', '这个', '帮我'];
-  const SITE_PREFIX = 'https://test.warom-lighting.com/v2_debug_ouyang/';
-  const OPEN_HASH = '#/workflow/workflow-base/agent';
 
   function stripFillers(text) {
     let value = String(text || '').replace(/\s+/g, '');
