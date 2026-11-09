@@ -132,6 +132,31 @@ it('打开通用流程不能被改成筛选', () => {
   assert.equal(chat.actions.some((item) => item.type === 'filter_list'), false);
 });
 
+it('打开请假流程时不能执行成通用流程', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '当前在我的已办，我帮你打开新建流程入口，再选请假申请。',
+      actions: [{ type: 'open_workflow', query: '通用流程' }],
+    },
+    '打开请假流程',
+  );
+  assert.equal(chat.action.type, 'open_workflow');
+  assert.match(chat.action.query, /请假/);
+  assert.equal(/通用/.test(chat.action.query), false);
+});
+
+it('打开请假被写成新建流程入口时纠正为请假', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '好的',
+      actions: [{ type: 'open_menu', query: '新建流程' }],
+    },
+    '打开请假流程',
+  );
+  assert.equal(chat.action.type, 'open_workflow');
+  assert.match(chat.action.query, /请假/);
+});
+
 it('帮我点查看草稿应产出 click_ui', () => {
   const chat = sanitizeChatAction(
     {

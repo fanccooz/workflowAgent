@@ -1131,7 +1131,15 @@ import {
       return runLeaveAgent(utterance);
     }
     if (type === 'open_workflow') {
-      let opened = await openWorkflowByUtterance(query);
+      // 优先用纠正后的 action.query；若仍空则回退用户原话，避免模型乱指流程名
+      const openQuery = String(query || utterance || '').trim() || utterance;
+      let opened = await openWorkflowByUtterance(openQuery);
+      if (opened.status === 'none') {
+        // 模型 query 仍没命中时，再用用户原话重试一次
+        if (openQuery !== utterance) {
+          opened = await openWorkflowByUtterance(utterance);
+        }
+      }
       if (opened.status === 'none') {
         const aiOpened = await aiOpenWorkflow(utterance);
         if (aiOpened) opened = aiOpened;

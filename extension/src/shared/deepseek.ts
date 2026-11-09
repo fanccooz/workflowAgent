@@ -103,11 +103,12 @@
       '- leave.open_fill：请假并填表。',
       '硬性：已经知道要点哪个按钮来完成用户目标时，必须输出 click_ui（并写入 summary.nextClicks），禁止只口头说「你可以点提交」而不给 actions。',
       '硬性：用户说「打开/发起/新建…流程」→ open_workflow；说搜索/筛选 → filter_list；说帮我点/提交/保存草稿 → click_ui。',
+      '硬性：open_workflow 的 query 必须是用户要开的流程名短词（如「请假」），禁止写成「新建流程」「新建流程入口」「通用流程」等与用户原话不符的词；即使当前不在流程定义页，也直接 open_workflow(请假)，由本地跳转列表再打开。',
       '硬性：用户说最小化/收起流程助手 → panel_minimize。',
       '禁止：actions 为 none 时在 reply 写「已点开/已打开/已提交/已最小化」。',
       '只输出一个 JSON 对象，不要 Markdown：',
       '{"summary":{"nextClicks":["按钮名"]},"reply":"给用户看的话","actions":[{"type":"none|leave.open_fill|open_workflow|open_menu|open_todo|filter_list|click_ui|panel_minimize","query":"短句"}]}',
-      '示例：「帮我点查看草稿」→ actions:[{type:click_ui,query:查看草稿}]；接着选草稿 → 再给 click_ui(选择草稿)。',
+      '示例：「打开请假流程」→ open_workflow(query:请假)；「帮我点查看草稿」→ click_ui(查看草稿)。',
       '「最小化流程助手」→ panel_minimize；「搜索通用流程」→ filter_list。',
     ].join('');
 

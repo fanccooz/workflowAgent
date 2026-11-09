@@ -184,6 +184,61 @@
     return raw.trim();
   }
 
+  /** 「请假流程」→「请假」；用于判断模型 query 是否跑偏 */
+  function openTargetCore(text) {
+    return extractOpenTarget(text)
+      .replace(/(流程|申请)$/g, '')
+      .replace(/^(流程|申请)/, '')
+      .trim();
+  }
+
+  /**
+   * 打开动作的 query 必须以用户原话目标为准。
+   * 典型错误：用户说「打开请假流程」，模型却给 query=通用流程/新建流程。
+   */
+  function alignOpenQueries(utterance, actions) {
+    const text = String(utterance || '').replace(/\s+/g, '');
+    const target = extractOpenTarget(text);
+    const core = openTargetCore(text);
+    if (!text || !core || core.length < 2) return actions;
+
+    const saidMenu = /菜单|模块|页面|导航|流程定义/.test(text);
+    const saidTodo = /待办/.test(text);
+
+    return (Array.isArray(actions) ? actions : []).map((item) => {
+      if (!item) return item;
+      if (item.type !== 'open_workflow' && item.type !== 'open_menu') return item;
+
+      // 「打开请假流程」不应被模型改成打开某个菜单入口
+      if (
+        item.type === 'open_menu'
+        && !saidMenu
+        && !saidTodo
+        && /流程|申请/.test(text)
+      ) {
+        return { type: 'open_workflow', query: target || core };
+      }
+
+      if (item.type !== 'open_workflow') return item;
+
+      const q = String(item.query || '').replace(/\s+/g, '');
+      if (!q) return { ...item, query: target || core };
+
+      const qCore = openTargetCore(q) || q.replace(/流程$/g, '');
+      // query 已覆盖用户目标（请假 ⊆ 请假申请 / 请假流程 ⊆ 请假）
+      if (
+        q.includes(core)
+        || core.includes(qCore)
+        || (qCore && (qCore.includes(core) || core.includes(qCore)))
+      ) {
+        return item;
+      }
+
+      // 冲突：以用户原话为准（打开请假 → 不能执行成通用流程）
+      return { ...item, query: target || core };
+    });
+  }
+
   /** 用户说「打开」时，禁止模型改成当前页搜索 */
   function enforceOpenVsSearch(utterance, actions) {
     const text = String(utterance || '').replace(/\s+/g, '');
@@ -194,7 +249,6 @@
     const saidOpen = /打开|进入|发起|新建|帮我开|(?:^|[，,。；;])去/.test(text);
     const saidMenu = /菜单|模块|页面|导航|流程定义/.test(text);
     const saidTodo = /待办/.test(text);
-    const saidWorkflow = /流程|申请|填表|填写/.test(text) || (!saidMenu && !saidTodo && saidOpen);
 
     // 纯搜索：只留 filter_list
     if (saidSearch && !saidOpen) {
@@ -227,6 +281,7 @@
         if (!saidSearch) {
           list = list.filter((item) => item.type !== 'filter_list');
         }
+        list = alignOpenQueries(text, list);
       }
     }
     return list.length ? list : [{ type: 'none', query: '' }];
