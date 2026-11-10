@@ -169,6 +169,18 @@ it('帮我点查看草稿应产出 click_ui', () => {
   assert.equal(chat.action.query, '查看草稿');
 });
 
+it('不能把提交变成点击', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '已帮你提交。',
+      actions: [{ type: 'click_ui', query: '提交' }],
+    },
+    '帮我提交',
+  );
+  assert.equal(chat.actions.some((item) => item.type === 'click_ui' && /提交/.test(item.query || '')), false);
+  assert.match(chat.reply, /手动/);
+});
+
 it('没有动作时不能假装已点开', () => {
   const chat = sanitizeChatAction(
     {

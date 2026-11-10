@@ -1,5 +1,6 @@
 // @ts-nocheck
 import * as LeaveSkill from './leave';
+import * as FormFill from './formfill';
 import * as AgentApi from './agent';
 import { LIST_HASH } from './types';
 import {
@@ -26,7 +27,7 @@ import {
     const hash = (typeof location !== 'undefined' && location.hash) || '';
     const onWorkflowList = hash.split('?')[0] === LIST_HASH;
     const dialogs = visibleDialogs();
-    const launchDialogOpen = dialogs.some(isWorkflowLaunchDialog);
+    const launch = dialogs.find(isWorkflowLaunchDialog) || null;
     return {
       ok: true,
       observation: {
@@ -34,7 +35,10 @@ import {
         onWorkflowList,
         hasRows: hasAgRows(),
         listLoadFailed: tableLoadFailed(),
-        launchDialogOpen,
+        launchDialogOpen: Boolean(launch),
+        launchDialogText: launch
+          ? String(launch.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 240)
+          : '',
         hash,
       },
     };
@@ -343,21 +347,22 @@ import {
     let fills = {};
     let note = '';
     const h = helpers || {};
+    const analysis = h.analysis || null;
+    const judged = FormFill.fillsFromSummary(analysis && (analysis.summary || analysis));
     if (typeof h.aiPlanFill === 'function') {
       try {
-        const planned = await h.aiPlanFill(utterance, fields);
+        const planned = await h.aiPlanFill(utterance, fields, analysis);
         fills = (planned && planned.fills) || {};
-        note = (planned && planned.note) || '';
+        note = (planned && planned.note) || '已按模型分析回填。';
       } catch (error) {
-        const fallback = fillLeaveFormFallback(utterance);
-        fills = fallback.fills || {};
-        note = `DeepSeek 填表失败（${error.message || '错误'}），已用本地规则兜底`;
+        fills = { ...judged };
+        note = `模型回填失败（${error.message || '错误'}），已用对话分析兜底`;
       }
     } else {
-      const fallback = fillLeaveFormFallback(utterance);
-      fills = fallback.fills || {};
-      note = fallback.message || '';
+      fills = { ...judged };
+      note = Object.keys(judged).length ? '已用对话分析回填。' : '';
     }
+    if (!Object.keys(fills).length && Object.keys(judged).length) fills = { ...judged };
 
     if (!Object.keys(fills).length) {
       return {
@@ -437,17 +442,8 @@ import {
     return { ok: true, slots, message: '已解析请假字段。' };
   }
 
-  async function submitWorkflow(confirmToken, expectedToken) {
-    if (!confirmToken || !expectedToken || String(confirmToken) !== String(expectedToken)) {
-      return { ok: false, message: '提交被拒绝：缺少有效确认。' };
-    }
-    const dialog = visibleDialogs().find(isWorkflowLaunchDialog);
-    if (!dialog) return { ok: false, message: '没有找到发起弹窗。' };
-    const button = [...dialog.querySelectorAll('button')].find((el) => /提\s*交/.test(el.innerText || ''));
-    if (!button) return { ok: false, message: '弹窗里没有「提交」按钮。' };
-    button.click();
-    await delay(300);
-    return { ok: true, message: '已点击提交。' };
+  async function submitWorkflow() {
+    return { ok: false, message: '流程提交必须手动完成，我不会点击「提交」。' };
   }
 
   /**
@@ -471,9 +467,12 @@ import {
       // 短查询打开；反思重试可用 args.query 覆盖
       const preferLeave = Boolean(args && args.preferLeave)
         || /请假/.test(String(args && args.utterance || ''));
-      let openUtterance = String((args && args.query) || (args && args.utterance) || '');
+      const inferred = FormFill.inferWorkflowQuery(args && args.utterance);
+      let openUtterance = String((args && args.query) || inferred || (args && args.utterance) || '');
       if (args && args.query) {
         openUtterance = /打开/.test(args.query) ? args.query : `打开${args.query}`;
+      } else if (inferred) {
+        openUtterance = `打开${inferred}`;
       } else if (preferLeave) {
         openUtterance = '打开请假';
       }

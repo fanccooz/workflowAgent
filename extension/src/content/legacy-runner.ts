@@ -2,6 +2,7 @@
 import * as Match from '@/shared/match';
 import * as Intent from '@/shared/intent';
 import * as Leave from '@/shared/leave';
+import * as FormFill from '@/shared/formfill';
 import * as Agent from '@/shared/agent';
 import * as Tools from '@/shared/tools';
 import * as Habits from '@/shared/habits';
@@ -126,23 +127,41 @@ import {
       .find((text) => text.includes('未找到可发起的流程定义') || text.includes('打开流程失败')) || '';
   }
 
+  function controlText(el) {
+    return String((el && el.innerText) || '').replace(/\s/g, '');
+  }
+
+  let closeUsedThisTurn = false;
+
+  function resetCloseOnce() {
+    closeUsedThisTurn = false;
+  }
+
+  /** 一次用户指令里最多关一次。只点取消或关闭，确认框不点「提交」。 */
   async function closeWorkflowDialogs() {
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const dialog = visibleDialogs().find((item) => /基础信息|提交|取消/.test(item.innerText));
-      if (!dialog) return;
-      const cancel = [...dialog.querySelectorAll('button')].find((button) => button.innerText.replace(/\s/g, '') === '取消');
-      const closeButton = dialog.querySelector('.el-dialog__headerbtn');
-      const button = cancel || closeButton;
-      if (!button) return;
-      button.click();
-      await delay(250);
-      const box = document.querySelector('.el-message-box__wrapper');
-      if (box && getComputedStyle(box).display !== 'none') {
-        const confirm = [...box.querySelectorAll('button')].find((button) => /确定|确认/.test(button.innerText));
-        if (confirm) confirm.click();
-        await delay(250);
-      }
-    }
+    if (closeUsedThisTurn) return;
+    closeUsedThisTurn = true;
+    const dialog = visibleDialogs().find(isWorkflowLaunchDialog)
+      || visibleDialogs().find((item) => /基础信息/.test(item.innerText || '') && /取\s*消|关\s*闭/.test(item.innerText || ''));
+    if (!dialog) return;
+    const cancel = [...dialog.querySelectorAll('button')].find((button) => /^(取消|关闭)$/.test(controlText(button)));
+    const closeButton = dialog.querySelector('.el-dialog__headerbtn, .el-dialog__close');
+    const button = cancel || closeButton;
+    if (!button) return;
+    button.click();
+    await delay(250);
+    const boxes = [...document.querySelectorAll('.el-message-box__wrapper, .el-message-box')].filter((item) => {
+      const style = getComputedStyle(item);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    });
+    const box = boxes[boxes.length - 1];
+    if (!box) return;
+    const buttons = [...box.querySelectorAll('button')];
+    const discard = buttons.find((item) => /不保存|放弃|不提交/.test(controlText(item)));
+    const confirmClose = buttons.find((item) => /^(确定|确认|是)$/.test(controlText(item)) && !/提交/.test(controlText(item)));
+    const pick = discard || confirmClose;
+    if (pick) pick.click();
+    await delay(200);
   }
 
   function currentCode() {
@@ -640,7 +659,7 @@ import {
     }
   }
 
-  async function aiPlanFill(utterance, fields) {
+  async function aiPlanFill(utterance, fields, analysis) {
     const today = new Date();
     const yyyy = today.getFullYear();
     const mm = String(today.getMonth() + 1).padStart(2, '0');
@@ -650,6 +669,7 @@ import {
       utterance,
       fields,
       today: `${yyyy}-${mm}-${dd}`,
+      analysis: analysis || null,
     });
     if (!response || !response.ok) {
       throw new Error((response && response.message) || '填表推理失败');
@@ -671,13 +691,19 @@ import {
     return Intent.sanitizeReflect(parsed);
   }
 
-  async function runLeaveAgent(utterance) {
-    const task = Agent.createTask(utterance, { goal: 'leave.open_fill' });
+  async function runLeaveAgent(utterance, options) {
+    const opts = options || {};
+    const analysis = opts.analysis || null;
+    const task = Agent.createTask(utterance, {
+      goal: opts.goal || 'form.open_fill',
+      openQuery: opts.openQuery || '',
+    });
     const helpers = {
       openWorkflowByUtterance,
       aiOpenWorkflow,
-      aiPlanFill,
+      aiPlanFill: (text, fields) => aiPlanFill(text, fields, analysis),
       aiReflect,
+      analysis,
       confirmToken: null,
     };
     const { task: finished, log } = await Tools.runAgentLoop(task, helpers);
@@ -1008,6 +1034,13 @@ import {
         choices: [],
       };
     }
+    if (/提交/.test(key) && !/不提交/.test(key)) {
+      return {
+        status: 'chat',
+        message: '流程提交需要你在表单里手动点击「提交」，我不会代为提交。',
+        choices: [],
+      };
+    }
 
     // 弹窗优先：草稿/提交按钮多半在 dialog 里
     const dialogs = visibleDialogs();
@@ -1120,15 +1153,20 @@ import {
     return { status: 'open', message: `已在${where}写入「${key}」并触发查询。`, choices: [] };
   }
 
-  async function executeChatAction(action, utterance) {
+  async function executeChatAction(action, utterance, options) {
+    const opts = options || {};
     const type = action && action.type ? action.type : 'none';
     const query = (action && action.query) || utterance;
 
     if (type === 'none') {
       return { status: 'chat', message: '', choices: [] };
     }
-    if (type === 'leave.open_fill') {
-      return runLeaveAgent(utterance);
+    if (type === 'leave.open_fill' || type === 'form.open_fill') {
+      return runLeaveAgent(utterance, {
+        goal: type,
+        openQuery: query,
+        analysis: opts.analysis || null,
+      });
     }
     if (type === 'open_workflow') {
       // 优先用纠正后的 action.query；若仍空则回退用户原话，避免模型乱指流程名
@@ -1212,6 +1250,7 @@ import {
     const opts = options || {};
     const runId = opts.runId;
     const history = Array.isArray(opts.history) ? opts.history : [];
+    const actionOpts = { analysis: opts.analysis || null };
     const list = Array.isArray(actions) && actions.length
       ? actions
       : [{ type: 'none', query: '' }];
@@ -1231,7 +1270,7 @@ import {
         Habits.reportStep(runId, seq, 'running', '', false).catch(() => {});
       }
 
-      last = await executeChatAction(action, utterance);
+      last = await executeChatAction(action, utterance, actionOpts);
 
       // 失败时再问 DeepSeek 如何补救，最多重试一次
       if (stepLooksFailed(last) && runId && Habits && last.status !== 'choose' && last.status !== 'login') {
@@ -1247,7 +1286,7 @@ import {
             type: advice.type || action.type,
             query: advice.query != null && advice.query !== '' ? advice.query : action.query,
           };
-          last = await executeChatAction(retryAction, utterance);
+          last = await executeChatAction(retryAction, utterance, actionOpts);
           if (last.message && advice.message) {
             last = { ...last, message: `${last.message}（补救：${advice.message}）` };
           }
@@ -1325,6 +1364,7 @@ import {
    * Nest 仅在对话失败时兜底，或有可执行步骤时落库拿 runId。
    */
   async function planAndRunUtterance(utterance, options) {
+    resetCloseOnce();
     let reply = '';
     let actions = [];
     let runId = null;
@@ -1336,10 +1376,16 @@ import {
 
     let chatOk = false;
     let chatError = '';
+    let analysis = null;
     try {
       const chat = await askDeepSeekChat(utterance, history, pageRaw);
       reply = chat.reply || '';
       actions = chat.actions && chat.actions.length ? chat.actions : [chat.action];
+      analysis = {
+        reply,
+        summary: chat.summary && typeof chat.summary === 'object' ? chat.summary : null,
+        form: FormFill.fillsFromSummary(chat.summary),
+      };
       if (chat.summary && typeof chat.summary === 'object') {
         pageSummary = chat.summary;
       }
@@ -1413,7 +1459,7 @@ import {
       }
     }
 
-    const exec = await executeChatActions(actionable, utterance, { runId, history });
+    const exec = await executeChatActions(actionable, utterance, { runId, history, analysis });
     return {
       ...exec,
       status: exec.status === 'chat' ? 'chat' : exec.status,

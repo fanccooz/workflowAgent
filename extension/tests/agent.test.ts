@@ -73,12 +73,12 @@ it('填表后 check，再 await_confirm', () => {
     launchDialogOpen: true,
   });
   assert.equal(action.type, 'stop');
-  assert.equal(action.status, 'await_confirm');
+  assert.equal(action.status, 'filled');
+  assert.match(action.message, /未提交/);
 });
 
-it('确认后带 token 才 submit', () => {
+it('确认令牌也不能代为提交', () => {
   const task = createTask('请假');
-  task.slotsExtracted = true;
   task.formFilled = true;
   task.requiredChecked = true;
   task.status = 'await_confirm';
@@ -90,8 +90,27 @@ it('确认后带 token 才 submit', () => {
     launchDialogOpen: true,
     requiredReady: true,
   });
-  assert.equal(action.name, 'submit_workflow');
-  assert.equal(action.args.confirmToken, 'tok-1');
+  assert.equal(action.type, 'stop');
+  assert.notEqual(action.name, 'submit_workflow');
+  assert.match(action.message, /手动/);
+});
+
+it('旧流程只触发一次打开切换', () => {
+  const task = createTask('打开请假', { openQuery: '请假', goal: 'form.open_fill' });
+  const obs = {
+    login: false,
+    onWorkflowList: true,
+    hasRows: true,
+    launchDialogOpen: true,
+    launchDialogText: '内部留言 接收人 提交 取消',
+  };
+  const first = nextAction(task, obs);
+  assert.equal(first.name, 'open_workflow');
+  applyResult(task, 'open_workflow', { ok: true, status: 'open' });
+  task.status = 'running';
+  const second = nextAction(task, obs);
+  assert.equal(second.type, 'stop');
+  assert.match(second.message, /未提交/);
 });
 
 it('open 多选则 choose 停止', () => {

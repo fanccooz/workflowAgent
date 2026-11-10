@@ -57,7 +57,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === MSG.aiFillForm) {
     loadSettings()
       .then((settings) =>
-        DeepSeek.fillForm(settings, message.utterance, message.fields, message.today),
+        DeepSeek.fillForm(
+          settings,
+          message.utterance,
+          message.fields,
+          message.today,
+          message.analysis,
+        ),
       )
       .then((content) => sendResponse({ ok: true, content }))
       .catch((error: Error) => sendResponse({ ok: false, message: error.message || '填表推理失败' }));

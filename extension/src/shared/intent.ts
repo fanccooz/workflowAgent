@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { fillsFromSummary, inferWorkflowQuery } from './formfill';
 
   const DEFAULT_KEYWORDS = {
     workflow: ['流程', '打开', '发起', '新建', '填写'],
@@ -142,6 +143,7 @@
   const CHAT_ACTIONS = [
     'none',
     'leave.open_fill',
+    'form.open_fill',
     'open_workflow',
     'open_menu',
     'open_todo',
@@ -265,6 +267,7 @@
         || item.type === 'open_menu'
         || item.type === 'open_todo'
         || item.type === 'leave.open_fill'
+        || item.type === 'form.open_fill'
       ));
       if (!hasOpen) {
         const target = extractOpenTarget(text);
@@ -307,29 +310,35 @@
     return /(最小化|收起|关掉|关闭)/.test(raw) && /(助手|面板|窗口|流程助手)/.test(raw);
   }
 
+  function isFormSubmitLabel(text) {
+    const q = String(text || '').replace(/\s+/g, '');
+    return /提交/.test(q) && !/不提交/.test(q);
+  }
+
   function enforceClickIntent(utterance, actions) {
     const text = String(utterance || '').replace(/\s+/g, '');
     let list = Array.isArray(actions) ? actions.slice() : [];
     if (wantsPanelMinimize(text)) {
       return [{ type: 'panel_minimize', query: '' }];
     }
-    // 「帮我提交 / 保存草稿 / 查看草稿」等直接点
+    // 表单「提交」只能手动点
     for (const btn of COMMON_PAGE_BUTTONS) {
-      if (text.includes(btn) && /(帮我|请|点|一下|吧|提交吧|保存)/.test(text)) {
+      if (isFormSubmitLabel(btn)) continue;
+      if (text.includes(btn) && /(帮我|请|点|一下|吧|保存)/.test(text)) {
         const has = list.some((item) => item.type === 'click_ui' && String(item.query || '').includes(btn));
         if (!has && (/(帮我点|点击|点开|点一下)/.test(text) || text === btn || text.endsWith(btn) || new RegExp(`(帮我|请)?${btn}`).test(text))) {
-          if (/(帮我|请|点|提交|保存)/.test(text)) {
+          if (/(帮我|请|点|保存)/.test(text)) {
             return [{ type: 'click_ui', query: btn }];
           }
         }
       }
     }
-    if (!/(帮我点|点击|点一下|点开|帮我提交|提交吧|保存草稿)/.test(text)) return list;
+    if (isFormSubmitLabel(text) && !/查看草稿|保存草稿|选择草稿/.test(text)) return list;
+    if (!/(帮我点|点击|点一下|点开|保存草稿)/.test(text)) return list;
     const hasClick = list.some((item) => item.type === 'click_ui' || item.type === 'panel_minimize');
     if (hasClick) return list;
     const target = extractClickTarget(text);
-    if (target) return [{ type: 'click_ui', query: target }];
-    if (/提交/.test(text)) return [{ type: 'click_ui', query: '提交' }];
+    if (target && !isFormSubmitLabel(target)) return [{ type: 'click_ui', query: target }];
     if (/保存草稿/.test(text)) return [{ type: 'click_ui', query: '保存草稿' }];
     return list;
   }
@@ -343,7 +352,7 @@
     const clicks = [];
     const push = (name) => {
       const q = String(name || '').replace(/\s+/g, '').trim();
-      if (!q || q.length > 20) return;
+      if (!q || q.length > 20 || isFormSubmitLabel(q)) return;
       if (clicks.includes(q)) return;
       clicks.push(q);
     };
@@ -371,6 +380,33 @@
     return clicks.map((query) => ({ type: 'click_ui', query }));
   }
 
+  function modelPromisedFill(reply) {
+    return /填写|填入|再填|写上|填上/.test(String(reply || ''));
+  }
+
+  /** 打开流程且模型已经分析出要填的内容时，打开后按分析回填 */
+  function enforceModelFormFill(utterance, actions, summary, reply) {
+    const judged = fillsFromSummary(summary);
+    if (!Object.keys(judged).length && !modelPromisedFill(reply)) return actions;
+    const blob = `${utterance || ''}\n${reply || ''}`;
+    const fillType = /请假/.test(blob) ? 'leave.open_fill' : 'form.open_fill';
+    const inferred = inferWorkflowQuery(blob);
+    const list = Array.isArray(actions) ? actions.slice() : [];
+    const hasFill = list.some((item) => item.type === 'form.open_fill' || item.type === 'leave.open_fill');
+    if (!hasFill) {
+      const current = list.find((item) => item.type === 'open_workflow');
+      const q = String((current && current.query) || '').replace(/\s+/g, '');
+      const generic = !q || /新建流程|新建|流程入口|通用流程/.test(q);
+      return [{ type: fillType, query: generic ? (inferred || q || utterance) : q }];
+    }
+    return list.map((item) => {
+      if (item.type === 'open_workflow' || item.type === 'form.open_fill' || item.type === 'leave.open_fill') {
+        return { type: fillType, query: item.query || inferred || utterance };
+      }
+      return item;
+    });
+  }
+
   /** 校验动作类型；summary 由模型自设；打开/搜索冲突时按关键词纠正 */
   function sanitizeChatAction(raw, utterance) {
     const data = raw && typeof raw === 'object' ? raw : {};
@@ -390,6 +426,12 @@
     actions = enforceOpenVsSearch(utterance || '', actions);
     actions = enforceClickIntent(utterance || '', actions);
     actions = hydrateClicksFromModel(reply, summary, actions);
+    actions = enforceModelFormFill(utterance || '', actions, summary, reply);
+    const hadSubmit = actions.some((item) => item.type === 'click_ui' && isFormSubmitLabel(item.query));
+    actions = actions.filter((item) => !(item.type === 'click_ui' && isFormSubmitLabel(item.query)));
+    if (hadSubmit || (isFormSubmitLabel(utterance) && !actions.some((item) => item.type && item.type !== 'none'))) {
+      reply = '流程提交需要你在表单里手动点击「提交」，我不会代为提交。';
+    }
     if (!actions.length) actions = [{ type: 'none', query: '' }];
     const first = actions[0] || { type: 'none', query: '' };
     const actionable = actions.filter((item) => item.type && item.type !== 'none');

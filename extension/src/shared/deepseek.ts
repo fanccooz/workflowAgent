@@ -98,18 +98,18 @@
       '- none：闲聊、或仅问答当前页信息（如有多少条）。',
       '- open_workflow / open_menu / open_todo：用户要去某页、办某事、看某模块，或当前页办不成需要换页时，直接打开，不要说「不能打开」。',
       '- filter_list：仅当用户说搜索/筛选/过滤/查找时用；query 只要纯关键字。',
-      '- click_ui：点击当前页/弹窗可见按钮（查看草稿、选择草稿、保存草稿、提交等），query=按钮原文；可多步按顺序多个 actions。',
+      '- click_ui：点击查看草稿、选择草稿、保存草稿等。禁止点击「提交」。',
       '- panel_minimize：最小化本流程助手面板。',
-      '- leave.open_fill：请假并填表。',
-      '硬性：已经知道要点哪个按钮来完成用户目标时，必须输出 click_ui（并写入 summary.nextClicks），禁止只口头说「你可以点提交」而不给 actions。',
-      '硬性：用户说「打开/发起/新建…流程」→ open_workflow；说搜索/筛选 → filter_list；说帮我点/提交/保存草稿 → click_ui。',
-      '硬性：open_workflow 的 query 必须是用户要开的流程名短词（如「请假」），禁止写成「新建流程」「新建流程入口」「通用流程」等与用户原话不符的词；即使当前不在流程定义页，也直接 open_workflow(请假)，由本地跳转列表再打开。',
-      '硬性：用户说最小化/收起流程助手 → panel_minimize。',
+      '- leave.open_fill / form.open_fill：要打开流程且有可填内容。把分析写入 summary.form，打开后按这些值逐步回填，不要提交。',
+      '硬性：流程「提交」只能用户手动点。禁止 click_ui(提交)，禁止说已提交。',
+      '硬性：只打开、没有可填内容 → open_workflow；有可填内容 → form.open_fill 或 leave.open_fill。',
+      '硬性：query 是流程短名（请假、内部留言），不要写成「新建流程」「通用流程」。',
+      '硬性：切换流程只关闭当前弹窗，不提交。用户说最小化 → panel_minimize。',
       '禁止：actions 为 none 时在 reply 写「已点开/已打开/已提交/已最小化」。',
       '只输出一个 JSON 对象，不要 Markdown：',
-      '{"summary":{"nextClicks":["按钮名"]},"reply":"给用户看的话","actions":[{"type":"none|leave.open_fill|open_workflow|open_menu|open_todo|filter_list|click_ui|panel_minimize","query":"短句"}]}',
-      '示例：「打开请假流程」→ open_workflow(query:请假)；「帮我点查看草稿」→ click_ui(查看草稿)。',
-      '「最小化流程助手」→ panel_minimize；「搜索通用流程」→ filter_list。',
+      '{"summary":{"form":{"事由":"头疼"},"nextClicks":["按钮名"]},"reply":"给用户看的话","actions":[{"type":"none|leave.open_fill|form.open_fill|open_workflow|open_menu|open_todo|filter_list|click_ui|panel_minimize","query":"短句"}]}',
+      '示例：「帮我请假两天，明天开始，事由头疼」→ leave.open_fill(query:请假)，summary.form 写日期和事由。',
+      '「打开请假流程」→ open_workflow(query:请假)；「搜索通用流程」→ filter_list。',
     ].join('');
 
     const messages = [{ role: 'system', content: system }];
@@ -128,15 +128,16 @@
     return messages;
   }
 
-  function buildFillMessages(utterance, fields, today) {
+  function buildFillMessages(utterance, fields, today, analysis) {
     const system = [
-      '你是表单填写助手。根据用户原话，为给定表单字段生成要填入的值。',
-      '只能使用字段列表里出现的 label，不要发明新字段名。',
-      '用户没提到的字段不要填（不要瞎编）。',
-      '日期请写成 YYYY-MM-DD；今天是 ' + String(today || '') + '。',
-      '相对日期（明天、后天、下周三等）请换算成具体日期。',
-      '只输出 JSON，不要 Markdown：',
-      '{"fills":{"字段label":"值"},"note":"可选说明"}',
+      '你是表单填写助手。把对话里的分析逐步对应到页面真实字段，供逐项回填。不要提交。',
+      'analysis.summary.form 是已经做出的判断，必须据此填，不要丢掉。',
+      '只能使用字段列表里的 label。键不完全一致时由你对应。',
+      '没有判断依据的字段不要填。',
+      '日期写成 YYYY-MM-DD；今天是 ' + String(today || '') + '。',
+      '「请假两天、明天开始」换算成起止日期。',
+      '只输出 JSON：',
+      '{"fills":{"字段label":"值"},"note":"对应说明"}',
     ].join('');
 
     const compact = (Array.isArray(fields) ? fields : []).map((item) => ({
@@ -145,13 +146,12 @@
       required: Boolean(item.required),
       value: item.value || '',
     }));
+    const payload = { utterance, fields: compact, today };
+    if (analysis && typeof analysis === 'object') payload.analysis = analysis;
 
     return [
       { role: 'system', content: system },
-      {
-        role: 'user',
-        content: JSON.stringify({ utterance, fields: compact, today }),
-      },
+      { role: 'user', content: JSON.stringify(payload) },
     ];
   }
 
@@ -171,10 +171,10 @@
   }
 
   /** 按页面字段拆解回填值 */
-  async function fillForm(settings, utterance, fields, today) {
+  async function fillForm(settings, utterance, fields, today, analysis) {
     assertReady(settings, '填表');
     const day = today || new Date().toISOString().slice(0, 10);
-    return chatCompletions(settings, buildFillMessages(utterance, fields, day));
+    return chatCompletions(settings, buildFillMessages(utterance, fields, day, analysis));
   }
 
   function buildReflectMessages(payload) {

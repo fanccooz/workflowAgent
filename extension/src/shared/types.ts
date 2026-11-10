@@ -3,6 +3,7 @@ export type ChatRole = 'user' | 'assistant';
 export type ChatActionType =
   | 'none'
   | 'leave.open_fill'
+  | 'form.open_fill'
   | 'open_workflow'
   | 'open_menu'
   | 'open_todo'
