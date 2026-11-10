@@ -84,6 +84,12 @@
 .wf-suggest-clear:hover {
   color: #243b53;
 }
+.wf-suggest-error {
+  margin: 0;
+  color: #9b2c2c;
+  font-size: 12px;
+  line-height: 1.4;
+}
 .wf-suggest-list {
   display: flex;
   flex-direction: column;

@@ -1602,23 +1602,23 @@ import {
       };
     }
 
-    // 扩展已经拆好的步骤原样入库，随后按库里的 seq 执行
+    // 入库不能挡住点页面。库正常时几百毫秒内拿到编号；被占用时先按内存步骤执行。
     if (!runId && Habits && actionable.length) {
-      try {
-        const saved = await Habits.saveTaskPlan(utterance, reply, actionable);
-        if (saved && saved.ok && saved.runId) {
-          runId = saved.runId;
-          if (Array.isArray(saved.steps) && saved.steps.length) {
-            actionable = saved.steps.map((step) => ({
-              type: step.type,
-              query: step.query || '',
-              seq: step.seq,
-            }));
-          }
-          plannedVia = 'extension+server';
+      const pending = Habits.saveTaskPlan(utterance, reply, actionable).catch(() => null);
+      const saved = await Promise.race([
+        pending,
+        new Promise((resolve) => setTimeout(() => resolve(null), 400)),
+      ]);
+      if (saved && saved.ok && saved.runId) {
+        runId = saved.runId;
+        if (Array.isArray(saved.steps) && saved.steps.length) {
+          actionable = saved.steps.map((step) => ({
+            type: step.type,
+            query: step.query || '',
+            seq: step.seq,
+          }));
         }
-      } catch (error) {
-        // 落库失败仍按内存中的步骤执行，失败时只在本地重规划
+        plannedVia = 'extension+server';
       }
     }
 

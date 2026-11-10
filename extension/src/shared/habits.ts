@@ -140,13 +140,10 @@
         ...(refresh ? { refresh: '1' } : {}),
       });
       const data = await apiFetch(`/api/suggestions/chat-box?${q.toString()}`);
-      const suggestions = Array.isArray(data && data.suggestions)
-        ? data.suggestions.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 3)
-        : [];
-      const suggestion = suggestions[0] || (data && data.suggestion ? String(data.suggestion) : '');
+      const suggestions = normalizeSuggestionRows(data && data.suggestions, data && data.suggestion);
       return {
-        suggestions: suggestions.length ? suggestions : (suggestion ? [suggestion] : []),
-        suggestion,
+        suggestions,
+        suggestion: suggestions[0] ? suggestions[0].content : '',
         cached: Boolean(data && data.cached),
         source: data && data.source,
         message: data && data.message ? String(data.message) : '',
@@ -154,6 +151,62 @@
       };
     } catch (error) {
       return { suggestion: '', error: error.message || '拉取失败', message: error.message || '拉取失败' };
+    }
+  }
+
+  function normalizeSuggestionRows(raw, fallback) {
+    const list = Array.isArray(raw) ? raw : [];
+    const out = [];
+    list.forEach((item) => {
+      if (item && typeof item === 'object') {
+        const content = String(item.content || '').trim();
+        const id = Number(item.id);
+        if (!content || !Number.isInteger(id) || id <= 0) return;
+        out.push({
+          id,
+          content,
+          waromUserId: String(item.waromUserId || ''),
+          updatedAt: String(item.updatedAt || ''),
+          basedOnEventId: item.basedOnEventId == null ? null : Number(item.basedOnEventId),
+        });
+        return;
+      }
+      const content = String(item || '').trim();
+      if (content) out.push({ id: 0, content, waromUserId: '', updatedAt: '', basedOnEventId: null });
+    });
+    if (!out.length && fallback) {
+      const content = String(fallback || '').trim();
+      if (content) out.push({ id: 0, content, waromUserId: '', updatedAt: '', basedOnEventId: null });
+    }
+    return out.slice(0, 3);
+  }
+
+  /** 按主键删除一条。请求体字段与表一致：waromUserId、id。 */
+  async function removeChatBoxSuggestion(id) {
+    const userId = await resolveWaromUserId();
+    if (!userId) return { ok: false, message: '未识别到华荣工号，请到设置里填写' };
+    try {
+      const data = await apiFetch('/api/suggestions/remove', {
+        method: 'POST',
+        body: JSON.stringify({ waromUserId: userId, id: Number(id) }),
+      });
+      return { ok: true, suggestions: normalizeSuggestionRows(data && data.suggestions) };
+    } catch (error) {
+      return { ok: false, message: error.message || '删除失败' };
+    }
+  }
+
+  async function clearChatBoxSuggestions() {
+    const userId = await resolveWaromUserId();
+    if (!userId) return { ok: false, message: '未识别到华荣工号，请到设置里填写' };
+    try {
+      await apiFetch('/api/suggestions/clear', {
+        method: 'POST',
+        body: JSON.stringify({ waromUserId: userId }),
+      });
+      return { ok: true, suggestions: [] };
+    } catch (error) {
+      return { ok: false, message: error.message || '删除失败' };
     }
   }
 
@@ -342,6 +395,8 @@ resolveWaromUserId,
     readWaromUserIdFromPage,
     reportChat,
     fetchChatBoxSuggestion,
+    removeChatBoxSuggestion,
+    clearChatBoxSuggestions,
     planTask,
     saveTaskPlan,
     listWaitingTasks,

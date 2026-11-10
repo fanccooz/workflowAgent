@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { ExtensionTokenGuard } from '../auth/extension-token.guard';
 import { SuggestionsService } from './suggestions.service';
 
@@ -16,5 +16,18 @@ export class SuggestionsController {
       waromUserId,
       refresh === '1' || refresh === 'true',
     );
+  }
+
+  @Post('remove')
+  remove(@Body() body: { waromUserId?: string; id?: number }) {
+    return this.suggestions.removeChatBoxSuggestion(
+      String(body?.waromUserId || ''),
+      Number(body?.id),
+    );
+  }
+
+  @Post('clear')
+  clear(@Body() body: { waromUserId?: string }) {
+    return this.suggestions.clearChatBoxSuggestions(String(body?.waromUserId || ''));
   }
 }

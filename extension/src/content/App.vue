@@ -29,7 +29,8 @@ const open = ref(false);
 const input = ref('');
 const running = ref(false);
 const habitLoading = ref(false);
-const habitSuggestions = ref<string[]>([]);
+const habitSuggestions = ref<Array<{ id: number; content: string }>>([]);
+const habitError = ref('');
 const choices = ref<ChoiceItem[]>([]);
 const awaitingConfirm = ref(false);
 const confirmLabel = ref('确认提交');
@@ -84,6 +85,7 @@ onMounted(async () => {
   if (headRef.value) enableDrag(headRef.value, { ignoreSelector: '.wf-head-actions' });
   if (toggleRef.value) enableDrag(toggleRef.value);
   suppressAutoOpenFromUrl().catch(() => {});
+  maybeFillHabitSuggestion({ announce: false }).catch(() => {});
   try {
     const resumed = await resumeWaitingTasks();
     const notes = resumed && Array.isArray(resumed.messages) ? resumed.messages.filter(Boolean) : [];
@@ -96,12 +98,20 @@ onMounted(async () => {
   }
 });
 
-function setHabitSuggestions(list: string[]) {
-  const next: string[] = [];
+function formatHabitError(message: string) {
+  if (/database is locked/i.test(message)) {
+    return '建议库被数据库工具占用，先显示上次的三条。关掉 DB Browser 后会重新生成。';
+  }
+  return message;
+}
+
+function setHabitSuggestions(list: Array<{ id?: number; content?: string } | string>) {
+  const next: Array<{ id: number; content: string }> = [];
   for (const item of list) {
-    const text = String(item || '').trim();
-    if (!text || next.includes(text)) continue;
-    next.push(text);
+    const content = String(typeof item === 'string' ? item : item?.content || '').trim();
+    const id = typeof item === 'string' ? 0 : Number(item?.id);
+    if (!content || next.some((row) => row.content === content)) continue;
+    next.push({ id: Number.isInteger(id) ? id : 0, content });
     if (next.length >= 3) break;
   }
   habitSuggestions.value = next;
@@ -112,8 +122,26 @@ function applyHabitSuggestion(text: string) {
   nextTick(() => composerRef.value?.focus());
 }
 
-function dismissHabitSuggestion(text: string) {
-  habitSuggestions.value = habitSuggestions.value.filter((item) => item !== text);
+async function dismissHabitSuggestion(id: number) {
+  const previous = habitSuggestions.value.slice();
+  habitSuggestions.value = previous.filter((item) => item.id !== id);
+  const result = await Habits.removeChatBoxSuggestion(id);
+  if (!result?.ok) {
+    habitSuggestions.value = previous;
+    habitError.value = formatHabitError(result?.message || '删除失败');
+    return;
+  }
+  if (Array.isArray(result.suggestions)) setHabitSuggestions(result.suggestions);
+}
+
+async function clearHabitSuggestions() {
+  const previous = habitSuggestions.value.slice();
+  habitSuggestions.value = [];
+  const result = await Habits.clearChatBoxSuggestions();
+  if (!result?.ok) {
+    habitSuggestions.value = previous;
+    habitError.value = formatHabitError(result?.message || '删除失败');
+  }
 }
 
 async function maybeFillHabitSuggestion(options: {
@@ -125,14 +153,16 @@ async function maybeFillHabitSuggestion(options: {
     const result = await Habits.fetchChatBoxSuggestion(Boolean(options.refresh));
     const incoming = Array.isArray(result?.suggestions) && result.suggestions.length
       ? result.suggestions
-      : (result?.suggestion ? [result.suggestion] : []);
+      : (result?.suggestion ? [{ id: 0, content: result.suggestion }] : []);
     if (incoming.length) {
       setHabitSuggestions(incoming);
+      habitError.value = formatHabitError(result?.error || result?.message || '');
       if (options.announce) {
         log.value = `${log.value}\n\n（已更新顶部快捷建议${result.cached ? '·缓存' : ''}，点击可填入）`;
       }
       return;
     }
+    habitError.value = formatHabitError(result?.message || result?.error || '暂无建议语');
     if (options.announce) {
       const reason =
         result?.message ||
@@ -235,7 +265,7 @@ async function send() {
       || (Array.isArray(response?.actions) && response.actions.some((item: { type?: string }) => item?.type === 'panel_minimize'));
     if (wantMinimize) setOpen(false);
     applyConfirmUi(response);
-    maybeFillHabitSuggestion({ refresh: true, announce: false });
+    maybeFillHabitSuggestion({ announce: false });
   } catch (error) {
     const message = error instanceof Error ? error.message : '执行失败。';
     transcript.value = `${transcript.value.replace(/\n助手：正在思考…$/, '')}\n助手：${message}`;
@@ -319,10 +349,11 @@ function openSettings() {
         <div class="wf-body">
           <HabitSuggestions
             :items="habitSuggestions"
+            :error="habitError"
             :disabled="habitLoading || running"
             @apply="applyHabitSuggestion"
             @dismiss="dismissHabitSuggestion"
-            @clear="habitSuggestions = []"
+            @clear="clearHabitSuggestions"
           />
           <p class="wf-hint-top">
             <template v-if="aiReadyHint">
