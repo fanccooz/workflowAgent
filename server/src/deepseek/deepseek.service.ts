@@ -124,23 +124,46 @@ export class DeepseekService {
     };
   }
 
-  async generateChatBoxSuggestion(userMessages: string[]): Promise<string> {
+  async generateChatBoxSuggestions(userMessages: string[], previous: string[] = []): Promise<string[]> {
     const system = [
-      '你根据用户最近在流程助手里的输入，归纳一句「下一次最可能直接键入」的中文短句。',
-      '要求：只输出这一句话本身，不要引号、不要 Markdown、不要解释。',
-      '句子要可直接粘贴进输入框发送（例如：帮我请假，明天到后天，事由开会）。',
-      '若记录太杂或无法归纳，只输出空字符串。',
+      '你根据用户最近在流程助手里的输入，给出 3 条不同的「下一次可能直接键入」的中文短句。',
+      '只输出 JSON：{"suggestions":["短句1","短句2","短句3"]}',
+      '三条必须互不相同，分别对应最近聊天里不同的办事意图，不要三条都照抄同一句历史输入。',
+      '若提供了 previous，三条都不要与 previous 里的句子完全相同。',
+      '每条不超过 40 字，可直接粘贴进输入框。无法归纳则 {"suggestions":[]}',
     ].join('');
 
     const recent = userMessages.slice(0, 30).map((text, i) => `${i + 1}. ${text}`).join('\n');
     const content = await this.chatCompletions(
       [
         { role: 'system', content: system },
-        { role: 'user', content: `最近用户输入：\n${recent}` },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            recent,
+            previous: previous.slice(0, 3),
+          }),
+        },
       ],
-      0.3,
+      0.7,
     );
-    return content.replace(/^["「]|["」]$/g, '');
+    let data: Record<string, unknown> = {};
+    try {
+      data = this.parseJsonObject(content);
+    } catch {
+      return [];
+    }
+    const raw = Array.isArray(data.suggestions) ? data.suggestions : [];
+    const seen = new Set<string>();
+    const suggestions: string[] = [];
+    for (const item of raw) {
+      const text = String(item || '').replace(/^["「]|["」]$/g, '').trim();
+      if (!text || seen.has(text)) continue;
+      seen.add(text);
+      suggestions.push(text);
+      if (suggestions.length >= 3) break;
+    }
+    return suggestions;
   }
 
   private normalizeHistory(

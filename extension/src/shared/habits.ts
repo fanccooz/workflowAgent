@@ -140,8 +140,13 @@
         ...(refresh ? { refresh: '1' } : {}),
       });
       const data = await apiFetch(`/api/suggestions/chat-box?${q.toString()}`);
+      const suggestions = Array.isArray(data && data.suggestions)
+        ? data.suggestions.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 3)
+        : [];
+      const suggestion = suggestions[0] || (data && data.suggestion ? String(data.suggestion) : '');
       return {
-        suggestion: data && data.suggestion ? String(data.suggestion) : '',
+        suggestions: suggestions.length ? suggestions : (suggestion ? [suggestion] : []),
+        suggestion,
         cached: Boolean(data && data.cached),
         source: data && data.source,
         message: data && data.message ? String(data.message) : '',

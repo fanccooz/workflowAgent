@@ -15,6 +15,7 @@ export interface ChatEventRow {
 
 export interface SuggestionCacheRow {
   warom_user_id: string;
+  slot: number;
   suggestion: string;
   updated_at: string;
   based_on_event_id: number | null;
@@ -67,10 +68,12 @@ export class DatabaseService implements OnModuleInit {
       CREATE INDEX IF NOT EXISTS idx_chat_events_user_created
         ON chat_events (warom_user_id, created_at DESC);
       CREATE TABLE IF NOT EXISTS suggestion_cache (
-        warom_user_id TEXT PRIMARY KEY,
+        warom_user_id TEXT NOT NULL,
+        slot INTEGER NOT NULL,
         suggestion TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-        based_on_event_id INTEGER
+        based_on_event_id INTEGER,
+        PRIMARY KEY (warom_user_id, slot)
       );
       CREATE TABLE IF NOT EXISTS task_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,6 +104,27 @@ export class DatabaseService implements OnModuleInit {
     this.ensureTaskRunColumn('durable', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureTaskRunColumn('recurring', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureTaskRunColumn('wait_note', "TEXT NOT NULL DEFAULT ''");
+    this.migrateSuggestionCache();
+  }
+
+  /** 旧表每个工号只有一句。改成同一工号最多三条，用 slot 区分。 */
+  private migrateSuggestionCache() {
+    const cols = this.db.prepare('PRAGMA table_info(suggestion_cache)').all() as unknown as Array<{ name: string }>;
+    if (cols.some((col) => col.name === 'slot')) return;
+    this.db.exec(`
+      CREATE TABLE suggestion_cache_v2 (
+        warom_user_id TEXT NOT NULL,
+        slot INTEGER NOT NULL,
+        suggestion TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+        based_on_event_id INTEGER,
+        PRIMARY KEY (warom_user_id, slot)
+      );
+      INSERT INTO suggestion_cache_v2 (warom_user_id, slot, suggestion, updated_at, based_on_event_id)
+      SELECT warom_user_id, 1, suggestion, updated_at, based_on_event_id FROM suggestion_cache;
+      DROP TABLE suggestion_cache;
+      ALTER TABLE suggestion_cache_v2 RENAME TO suggestion_cache;
+    `);
   }
 
   private ensureTaskRunColumn(name: string, ddl: string) {
@@ -169,23 +193,32 @@ export class DatabaseService implements OnModuleInit {
     return row ? row.id : null;
   }
 
-  getSuggestionCache(waromUserId: string): SuggestionCacheRow | undefined {
+  listSuggestions(waromUserId: string): SuggestionCacheRow[] {
     return this.db
-      .prepare(`SELECT * FROM suggestion_cache WHERE warom_user_id = ?`)
-      .get(waromUserId) as unknown as SuggestionCacheRow | undefined;
+      .prepare(
+        `SELECT * FROM suggestion_cache WHERE warom_user_id = ? ORDER BY slot ASC`,
+      )
+      .all(waromUserId) as unknown as SuggestionCacheRow[];
   }
 
-  upsertSuggestion(waromUserId: string, suggestion: string, basedOnEventId: number | null) {
-    this.db
-      .prepare(
-        `INSERT INTO suggestion_cache (warom_user_id, suggestion, updated_at, based_on_event_id)
-         VALUES (?, ?, datetime('now', 'localtime'), ?)
-         ON CONFLICT(warom_user_id) DO UPDATE SET
-           suggestion = excluded.suggestion,
-           updated_at = excluded.updated_at,
-           based_on_event_id = excluded.based_on_event_id`,
-      )
-      .run(waromUserId, suggestion, basedOnEventId);
+  /**
+   * 写入最多三条。和库里已有内容完全一样时不更新，避免一直刷同一句。
+   * 返回是否真正写入。
+   */
+  replaceSuggestions(waromUserId: string, suggestions: string[], basedOnEventId: number | null): boolean {
+    const next = suggestions.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 3);
+    const prev = this.listSuggestions(waromUserId).map((row) => row.suggestion);
+    const same = prev.length === next.length && prev.every((text, index) => text === next[index]);
+    if (same) return false;
+    this.db.prepare(`DELETE FROM suggestion_cache WHERE warom_user_id = ?`).run(waromUserId);
+    const insert = this.db.prepare(
+      `INSERT INTO suggestion_cache (warom_user_id, slot, suggestion, updated_at, based_on_event_id)
+       VALUES (?, ?, ?, datetime('now', 'localtime'), ?)`,
+    );
+    next.forEach((text, index) => {
+      insert.run(waromUserId, index + 1, text, basedOnEventId);
+    });
+    return true;
   }
 
   createTaskRun(waromUserId: string, utterance: string, reply: string): TaskRunRow {

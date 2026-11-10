@@ -18,18 +18,16 @@ export class SuggestionsService {
     const minMessages = Number(process.env.MIN_USER_MESSAGES || 3);
     const recentLimit = Number(process.env.RECENT_LIMIT || 30);
     const latestId = this.db.latestUserEventId(userId);
-    const cache = this.db.getSuggestionCache(userId);
+    const cachedRows = this.db.listSuggestions(userId);
+    const cached = cachedRows.map((row) => row.suggestion).filter(Boolean);
+    const cacheFresh = cached.length === 3
+      && new Set(cached).size === 3
+      && cachedRows.every((row) => row.based_on_event_id != null && Number(row.based_on_event_id) === Number(latestId));
 
-    if (
-      !refresh
-      && cache
-      && cache.suggestion
-      && cache.based_on_event_id != null
-      && latestId != null
-      && Number(cache.based_on_event_id) === Number(latestId)
-    ) {
+    if (!refresh && cacheFresh) {
       return {
-        suggestion: cache.suggestion,
+        suggestions: cached,
+        suggestion: cached[0],
         source: 'deepseek',
         cached: true,
       };
@@ -37,27 +35,36 @@ export class SuggestionsService {
 
     const recent = this.db.listRecentUserMessages(userId, recentLimit);
     if (recent.length < minMessages) {
-      return { suggestion: '', source: 'none', cached: false };
+      return { suggestions: [], suggestion: '', source: 'none', cached: false };
     }
 
     try {
-      const suggestion = await this.deepseek.generateChatBoxSuggestion(
-        recent.map((row) => row.content),
-      );
-      // 只有真正生成出句子才写入缓存，避免空结果锁住后续拉取
-      if (suggestion) {
-        this.db.upsertSuggestion(userId, suggestion, latestId);
+      const messages = recent.map((row) => row.content);
+      let suggestions = await this.deepseek.generateChatBoxSuggestions(messages, cached);
+      const unchanged = suggestions.length === cached.length
+        && suggestions.every((text, index) => text === cached[index]);
+      if (unchanged) {
+        suggestions = await this.deepseek.generateChatBoxSuggestions(messages, cached);
       }
+      const stillSame = suggestions.length > 0
+        && suggestions.length === cached.length
+        && suggestions.every((text, index) => text === cached[index]);
+      // 和已存内容完全一样时不写库
+      if (suggestions.length === 3 && !stillSame) {
+        this.db.replaceSuggestions(userId, suggestions, latestId);
+      }
+      const visible = suggestions.length ? suggestions : cached;
       return {
-        suggestion,
-        source: suggestion ? 'deepseek' : 'none',
+        suggestions: visible,
+        suggestion: visible[0] || '',
+        source: visible.length ? 'deepseek' : 'none',
         cached: false,
-        message: suggestion ? undefined : 'DeepSeek 未生成可用建议语',
+        message: visible.length ? undefined : 'DeepSeek 未生成可用建议语',
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : '生成失败';
       this.logger.error(message);
-      return { suggestion: '', source: 'error', cached: false, message };
+      return { suggestions: [], suggestion: '', source: 'error', cached: false, message };
     }
   }
 }

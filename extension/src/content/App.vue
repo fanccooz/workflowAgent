@@ -96,13 +96,15 @@ onMounted(async () => {
   }
 });
 
-function addHabitSuggestion(text: string) {
-  const suggestion = String(text || '').trim();
-  if (!suggestion) return;
-  habitSuggestions.value = [
-    suggestion,
-    ...habitSuggestions.value.filter((item) => item !== suggestion),
-  ].slice(0, 3);
+function setHabitSuggestions(list: string[]) {
+  const next: string[] = [];
+  for (const item of list) {
+    const text = String(item || '').trim();
+    if (!text || next.includes(text)) continue;
+    next.push(text);
+    if (next.length >= 3) break;
+  }
+  habitSuggestions.value = next;
 }
 
 function applyHabitSuggestion(text: string) {
@@ -121,8 +123,11 @@ async function maybeFillHabitSuggestion(options: {
 } = {}) {
   try {
     const result = await Habits.fetchChatBoxSuggestion(Boolean(options.refresh));
-    if (result?.suggestion) {
-      addHabitSuggestion(result.suggestion);
+    const incoming = Array.isArray(result?.suggestions) && result.suggestions.length
+      ? result.suggestions
+      : (result?.suggestion ? [result.suggestion] : []);
+    if (incoming.length) {
+      setHabitSuggestions(incoming);
       if (options.announce) {
         log.value = `${log.value}\n\n（已更新顶部快捷建议${result.cached ? '·缓存' : ''}，点击可填入）`;
       }
