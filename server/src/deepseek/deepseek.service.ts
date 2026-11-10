@@ -3,10 +3,13 @@ import { Injectable, Logger } from '@nestjs/common';
 const STEP_TYPES = [
   'none',
   'leave.open_fill',
+  'form.open_fill',
   'open_workflow',
   'open_menu',
   'open_todo',
   'filter_list',
+  'click_ui',
+  'panel_minimize',
 ] as const;
 
 export type PlanStepType = (typeof STEP_TYPES)[number];
@@ -69,9 +72,55 @@ export class DeepseekService {
       let type = String(row.type || 'none') as PlanStepType;
       if (!STEP_TYPES.includes(type)) type = 'none';
       if (type === 'none') continue;
-      steps.push({ type, query: String(row.query || '').trim() });
+      const query = String(row.query || '').trim();
+      if (type === 'click_ui' && /提交/.test(query) && !/不提交/.test(query)) continue;
+      steps.push({ type, query });
     }
     return steps;
+  }
+
+  /** 入库前校验客户端或模型给出的步骤，丢掉提交点击。 */
+  acceptSteps(raw: unknown): PlanStep[] {
+    return this.sanitizeSteps(raw);
+  }
+
+  /** 某步失败后，重规划还没做完的步骤。 */
+  async replanRemaining(payload: {
+    utterance: string;
+    failedStep?: { type?: string; query?: string; seq?: number };
+    lastError?: string;
+    pageSummary?: Record<string, unknown>;
+    history?: Array<{ role?: string; content?: string }>;
+    doneSteps?: Array<{ type?: string; query?: string }>;
+  }): Promise<{ reply: string; steps: PlanStep[] }> {
+    const system = [
+      '你是企业信息平台的任务规划器。某一步刚刚失败，请只规划还没做完的步骤。',
+      '不要重复已经成功的步骤。无法继续时 steps 为空数组。',
+      '禁止规划点击「提交」。提交只能由用户手动完成。',
+      '有可填内容用 leave.open_fill 或 form.open_fill。',
+      '只输出 JSON：{"reply":"一句话","steps":[{"type":"...","query":"..."}]}',
+      `合法 type：${STEP_TYPES.filter((item) => item !== 'none').join('、')}`,
+    ].join('\n');
+    const messages: Array<{ role: string; content: string }> = [{ role: 'system', content: system }];
+    for (const item of this.normalizeHistory(payload?.history, 20)) {
+      messages.push(item);
+    }
+    messages.push({
+      role: 'user',
+      content: JSON.stringify({
+        utterance: payload?.utterance || '',
+        failedStep: payload?.failedStep || null,
+        lastError: payload?.lastError || '',
+        doneSteps: payload?.doneSteps || [],
+        page: payload?.pageSummary || {},
+      }),
+    });
+    const content = await this.chatCompletions(messages);
+    const data = this.parseJsonObject(content);
+    return {
+      reply: String(data.reply || data.message || '').trim() || '已重新规划剩余步骤。',
+      steps: this.sanitizeSteps(data.steps),
+    };
   }
 
   async generateChatBoxSuggestion(userMessages: string[]): Promise<string> {
@@ -122,7 +171,8 @@ export class DeepseekService {
       '你是企业信息平台的任务规划器，把用户指令拆成可执行步骤。',
       '必须只输出一个 JSON 对象，不要 Markdown、不要解释。',
       '格式：{"reply":"一句话说明","steps":[{"type":"...","query":"..."}]}',
-      'type 只能是：open_todo、open_menu、open_workflow、filter_list、leave.open_fill。',
+      'type 只能是：open_todo、open_menu、open_workflow、filter_list、leave.open_fill、form.open_fill、click_ui、panel_minimize。',
+      '有可填内容用 leave.open_fill 或 form.open_fill，不要只打开。禁止 click_ui 的 query 为「提交」。',
       '由你判断是否需要换页：用户要去某页、办某事，或当前页做不到时，直接给 open_*，不要说不能打开。',
       '【打开 vs 搜索】',
       '- 打开/进入/发起/新建/去某页 = open_workflow / open_menu / open_todo。',

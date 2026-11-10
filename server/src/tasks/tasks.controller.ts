@@ -23,6 +23,24 @@ export class TasksController {
     });
   }
 
+  @Post('save')
+  save(
+    @Body()
+    body: {
+      waromUserId?: string;
+      utterance?: string;
+      reply?: string;
+      steps?: unknown;
+    },
+  ) {
+    return this.tasks.save(
+      String(body?.waromUserId || ''),
+      String(body?.utterance || ''),
+      String(body?.reply || ''),
+      body?.steps,
+    );
+  }
+
   @Get(':runId')
   get(@Param('runId') runId: string) {
     return this.tasks.getRun(Number(runId));
@@ -59,5 +77,20 @@ export class TasksController {
     },
   ) {
     return this.tasks.act(Number(runId), Number(seq), body || {});
+  }
+
+  @Post(':runId/replan')
+  replan(
+    @Param('runId') runId: string,
+    @Body()
+    body: {
+      failedSeq?: number;
+      lastError?: string;
+      pageSummary?: Record<string, unknown>;
+      history?: Array<{ role?: string; content?: string }>;
+      steps?: unknown;
+    },
+  ) {
+    return this.tasks.replan(Number(runId), body || {});
   }
 }

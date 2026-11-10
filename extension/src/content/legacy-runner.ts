@@ -6,6 +6,7 @@ import * as FormFill from '@/shared/formfill';
 import * as Agent from '@/shared/agent';
 import * as Tools from '@/shared/tools';
 import * as Habits from '@/shared/habits';
+import * as TaskPlan from '@/shared/taskplan';
 import { MSG, LIST_HASH } from '@/shared/types';
 import {
   delay,
@@ -1246,82 +1247,129 @@ import {
     return result.status === 'error' || result.status === 'none' || result.status === 'disabled';
   }
 
+  async function replanRemaining(utterance, failedAction, errorMessage, history, pageRaw) {
+    const failed = failedAction || { type: '', query: '' };
+    const response = await chrome.runtime.sendMessage({
+      type: MSG.aiChat,
+      utterance: [
+        `原任务：${utterance}`,
+        `刚失败的步骤：${failed.type || ''} ${failed.query || ''}`.trim(),
+        `失败原因：${errorMessage || '未知'}`,
+        '请只规划还没做完的步骤，不要重复已成功的步骤，不要点击提交。',
+      ].join('\n'),
+      history: Array.isArray(history) ? history : [],
+      pageSummary: pageRaw || null,
+    });
+    if (!response || !response.ok) {
+      throw new Error((response && response.message) || '重新规划失败');
+    }
+    const raw = String(response.content || '').trim();
+    let parsed;
+    try {
+      parsed = Intent.parseModelJson(raw);
+    } catch (error) {
+      parsed = { reply: raw, actions: [] };
+    }
+    const chat = Intent.sanitizeChatAction(parsed, utterance);
+    return {
+      reply: chat.reply || '',
+      steps: TaskPlan.cleanPlanSteps(chat.actions),
+      analysis: {
+        reply: chat.reply || '',
+        summary: chat.summary && typeof chat.summary === 'object' ? chat.summary : null,
+        form: FormFill.fillsFromSummary(chat.summary),
+      },
+    };
+  }
+
   async function executeChatActions(actions, utterance, options) {
     const opts = options || {};
     const runId = opts.runId;
     const history = Array.isArray(opts.history) ? opts.history : [];
-    const actionOpts = { analysis: opts.analysis || null };
+    let analysis = opts.analysis || null;
     const list = Array.isArray(actions) && actions.length
       ? actions
       : [{ type: 'none', query: '' }];
+    let queue = TaskPlan.cleanPlanSteps(list);
     const stepMessages = [];
     let last = { status: 'chat', message: '', choices: [] };
+    let executed = 0;
+    let replans = 0;
 
     if (runId && Habits) {
       Habits.startTaskRun(runId).catch(() => {});
     }
 
-    for (let i = 0; i < list.length; i += 1) {
-      let action = list[i];
-      if (!action || action.type === 'none') continue;
-      const seq = action.seq != null ? Number(action.seq) : i + 1;
+    while (queue.length && executed < TaskPlan.MAX_EXEC_STEPS) {
+      const action = queue.shift();
+      const seq = action.seq != null ? Number(action.seq) : executed + 1;
+      executed += 1;
 
       if (runId && Habits) {
         Habits.reportStep(runId, seq, 'running', '', false).catch(() => {});
       }
 
-      last = await executeChatAction(action, utterance, actionOpts);
+      last = await executeChatAction(action, utterance, { analysis });
 
-      // 失败时再问 DeepSeek 如何补救，最多重试一次
-      if (stepLooksFailed(last) && runId && Habits && last.status !== 'choose' && last.status !== 'login') {
-        const advice = await Habits.actOnFailedStep(
-          runId,
-          seq,
-          last.message || last.status,
-          collectPageRaw(),
-          history,
-        );
-        if (advice && advice.decision === 'retry') {
-          const retryAction = {
-            type: advice.type || action.type,
-            query: advice.query != null && advice.query !== '' ? advice.query : action.query,
-          };
-          last = await executeChatAction(retryAction, utterance, actionOpts);
-          if (last.message && advice.message) {
-            last = { ...last, message: `${last.message}（补救：${advice.message}）` };
+      const blocked = last.status === 'choose' || last.status === 'login';
+      if (stepLooksFailed(last) && !blocked) {
+        let replacement = [];
+        let replanReply = '';
+        if (replans < TaskPlan.MAX_REPLANS) {
+          try {
+            const planned = await replanRemaining(
+              utterance,
+              action,
+              last.message || last.status,
+              history,
+              collectPageRaw(),
+            );
+            replacement = planned.steps || [];
+            replanReply = planned.reply || '';
+            if (planned.analysis && (planned.analysis.summary || (planned.analysis.form && Object.keys(planned.analysis.form).length))) {
+              analysis = planned.analysis;
+            }
+          } catch (error) {
+            replacement = [];
           }
-        } else if (advice && advice.decision === 'skip') {
-          last = {
-            status: 'open',
-            message: advice.message || `已跳过步骤 ${seq}`,
-            choices: [],
-          };
-        } else if (advice && (advice.decision === 'ask_user' || advice.decision === 'stop')) {
-          last = {
-            status: advice.decision === 'stop' ? 'error' : 'error',
-            message: advice.message || last.message,
-            choices: last.choices || [],
-          };
+          if (runId && Habits) {
+            const stored = await Habits.replanTask(runId, {
+              failedSeq: seq,
+              lastError: last.message || last.status,
+              pageSummary: collectPageRaw(),
+              history,
+              steps: replacement,
+            });
+            if (stored && Array.isArray(stored.steps) && stored.steps.length) {
+              replacement = stored.steps;
+            }
+            if (!replanReply && stored && stored.reply) replanReply = stored.reply;
+          }
         }
+        const decision = TaskPlan.queueAfterFailure(replacement, replans);
+        if (runId && Habits) {
+          await Habits.reportStep(runId, seq, 'failed', last.message || '', decision.stop);
+        }
+        if (last && last.message) stepMessages.push(last.message);
+        if (!decision.stop) {
+          replans += 1;
+          queue = decision.queue;
+          stepMessages.push(replanReply ? `重新规划：${replanReply}` : '已按新计划继续。');
+          continue;
+        }
+        break;
       }
 
       if (last && last.message) stepMessages.push(last.message);
 
-      const stepStatus = last.status === 'choose' || last.status === 'login'
-        ? 'failed'
-        : stepLooksFailed(last)
-          ? 'failed'
-          : 'done';
-      const isLast = i >= list.length - 1
-        || last.status === 'choose'
-        || last.status === 'login'
-        || stepStatus === 'failed';
+      const stepStatus = blocked ? 'failed' : 'done';
+      const isLast = queue.length === 0 || stepStatus === 'failed';
       if (runId && Habits) {
         Habits.reportStep(runId, seq, stepStatus, last.message || '', isLast).catch(() => {});
       }
 
-      if (last.status === 'choose' || last.status === 'login' || stepStatus === 'failed') break;
-      if (i < list.length - 1 && ['open_todo', 'open_menu', 'open_workflow'].includes(action.type)) {
+      if (stepStatus === 'failed') break;
+      if (queue.length && ['open_todo', 'open_menu', 'open_workflow'].includes(action.type)) {
         await delay(2000);
       }
     }
@@ -1360,8 +1408,8 @@ import {
   }
 
   /**
-   * 对话框主路径：DeepSeek 判断意图与动作；本地只采集页面摘要并执行。
-   * Nest 仅在对话失败时兜底，或有可执行步骤时落库拿 runId。
+   * 对话框主路径：DeepSeek 拆成步骤并入库，再按库里的顺序执行。
+   * 某步失败时重新规划剩余步骤，替换未执行的尾部，最多重规划一次。
    */
   async function planAndRunUtterance(utterance, options) {
     resetCloseOnce();
@@ -1431,7 +1479,7 @@ import {
       );
     }
 
-    const actionable = filterActionableSteps(actions);
+    let actionable = filterActionableSteps(actions);
 
     if (!actionable.length) {
       return {
@@ -1446,16 +1494,23 @@ import {
       };
     }
 
-    // 有可执行步骤时，尝试 Nest 入库拿到 runId（不覆盖前端已结合上下文的动作）
-    if (!runId && Habits) {
+    // 扩展已经拆好的步骤原样入库，随后按库里的 seq 执行
+    if (!runId && Habits && actionable.length) {
       try {
-        const planned = await Habits.planTask(utterance, { history, pageSummary });
-        if (planned && planned.ok && planned.runId) {
-          runId = planned.runId;
+        const saved = await Habits.saveTaskPlan(utterance, reply, actionable);
+        if (saved && saved.ok && saved.runId) {
+          runId = saved.runId;
+          if (Array.isArray(saved.steps) && saved.steps.length) {
+            actionable = saved.steps.map((step) => ({
+              type: step.type,
+              query: step.query || '',
+              seq: step.seq,
+            }));
+          }
           plannedVia = 'extension+server';
         }
       } catch (error) {
-        // 落库失败不影响执行
+        // 落库失败仍按内存中的步骤执行，失败时只在本地重规划
       }
     }
 

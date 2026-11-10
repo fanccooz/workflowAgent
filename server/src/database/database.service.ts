@@ -239,4 +239,37 @@ export class DatabaseService implements OnModuleInit {
       .prepare(`SELECT * FROM task_steps WHERE run_id = ? AND seq = ?`)
       .get(runId, seq) as unknown as TaskStepRow | undefined;
   }
+
+  /** 删掉失败步之后尚未执行的步骤，再按新计划接上。 */
+  replacePendingTail(
+    runId: number,
+    afterSeq: number,
+    steps: Array<{ type: string; query: string }>,
+  ): TaskStepRow[] {
+    this.db
+      .prepare(
+        `DELETE FROM task_steps
+         WHERE run_id = ? AND seq > ? AND status IN ('pending', 'running')`,
+      )
+      .run(runId, afterSeq);
+    const maxRow = this.db
+      .prepare(`SELECT MAX(seq) AS maxSeq FROM task_steps WHERE run_id = ?`)
+      .get(runId) as unknown as { maxSeq: number | null };
+    let seq = Number(maxRow?.maxSeq || afterSeq || 0);
+    const insert = this.db.prepare(
+      `INSERT INTO task_steps (run_id, seq, type, query, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'pending', datetime('now', 'localtime'), datetime('now', 'localtime'))`,
+    );
+    const inserted: TaskStepRow[] = [];
+    for (const step of steps) {
+      seq += 1;
+      insert.run(runId, seq, step.type, step.query || '');
+      const row = this.db
+        .prepare(`SELECT * FROM task_steps WHERE run_id = ? AND seq = ?`)
+        .get(runId, seq) as unknown as TaskStepRow;
+      if (row) inserted.push(row);
+    }
+    this.updateTaskRunStatus(runId, 'running');
+    return inserted;
+  }
 }

@@ -214,6 +214,63 @@
     }
   }
 
+  /** 把扩展已经拆好的步骤入库，执行时以库里的 seq 为准。 */
+  async function saveTaskPlan(utterance, reply, steps) {
+    const userId = await resolveWaromUserId();
+    if (!userId) {
+      return { ok: false, skipped: true, reason: 'no-user', message: '未识别到工号，请到设置里填写' };
+    }
+    const list = Array.isArray(steps) ? steps : [];
+    const data = await apiFetch('/api/tasks/save', {
+      method: 'POST',
+      body: JSON.stringify({
+        waromUserId: userId,
+        utterance: String(utterance || '').trim().slice(0, 2000),
+        reply: String(reply || '').slice(0, 2000),
+        steps: list.map((step) => ({
+          type: step && step.type,
+          query: String((step && step.query) || '').slice(0, 200),
+        })),
+      }),
+    });
+    return {
+      ok: true,
+      runId: data.runId,
+      reply: data.reply || reply || '',
+      steps: Array.isArray(data.steps) ? data.steps : [],
+      userId,
+    };
+  }
+
+  /** 失败后用新步骤替换尚未执行的尾部。steps 为空时由服务端再规划。 */
+  async function replanTask(runId, body) {
+    if (!runId) return { ok: false, steps: [] };
+    const payload = body || {};
+    const steps = Array.isArray(payload.steps) ? payload.steps : [];
+    try {
+      const data = await apiFetch(`/api/tasks/${runId}/replan`, {
+        method: 'POST',
+        body: JSON.stringify({
+          failedSeq: payload.failedSeq,
+          lastError: String(payload.lastError || '').slice(0, 1000),
+          pageSummary: payload.pageSummary || {},
+          history: Array.isArray(payload.history) ? payload.history.slice(-20) : [],
+          steps: steps.map((step) => ({
+            type: step && step.type,
+            query: String((step && step.query) || '').slice(0, 200),
+          })),
+        }),
+      });
+      return {
+        ok: true,
+        reply: data && data.reply ? String(data.reply) : '',
+        steps: data && Array.isArray(data.steps) ? data.steps : [],
+      };
+    } catch (error) {
+      return { ok: false, steps: [], message: error.message || '重新规划失败' };
+    }
+  }
+
   /** 步骤失败后再问 DeepSeek */
   async function actOnFailedStep(runId, seq, lastError, pageSummary, history) {
     if (!runId || seq == null) return null;
@@ -247,6 +304,8 @@ resolveWaromUserId,
     reportChat,
     fetchChatBoxSuggestion,
     planTask,
+    saveTaskPlan,
+    replanTask,
     startTaskRun,
     reportStep,
     actOnFailedStep,

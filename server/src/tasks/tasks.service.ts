@@ -58,6 +58,41 @@ export class TasksService {
     };
   }
 
+  /** 把扩展已经拆好的步骤原样入库，不再另叫一次模型。 */
+  save(
+    waromUserId: string,
+    utterance: string,
+    reply: string,
+    rawSteps: unknown,
+  ) {
+    const userId = String(waromUserId || '').trim();
+    const text = String(utterance || '').trim();
+    if (!userId) throw new BadRequestException('缺少 waromUserId');
+    if (!text) throw new BadRequestException('缺少 utterance');
+    const accepted = this.deepseek.acceptSteps(rawSteps);
+    if (!accepted.length) throw new BadRequestException('没有可入库的步骤');
+    const run = this.db.createTaskRun(userId, text, String(reply || ''));
+    const steps = this.db.insertTaskSteps(
+      run.id,
+      accepted.map((step, index) => ({
+        seq: index + 1,
+        type: step.type,
+        query: step.query,
+      })),
+    );
+    return {
+      runId: run.id,
+      reply: run.reply,
+      status: run.status,
+      steps: steps.map((step) => ({
+        seq: step.seq,
+        type: step.type,
+        query: step.query,
+        status: step.status,
+      })),
+    };
+  }
+
   getRun(runId: number) {
     const run = this.db.getTaskRun(runId);
     if (!run) throw new NotFoundException('任务不存在');
@@ -100,9 +135,9 @@ export class TasksService {
 
     if (body?.finalizeRun) {
       const steps = this.db.listTaskSteps(runId);
-      const failed = steps.some((item) => item.status === 'failed');
       const pending = steps.some((item) => item.status === 'pending' || item.status === 'running');
-      this.db.updateTaskRunStatus(runId, failed ? 'failed' : pending ? 'running' : 'done');
+      const failed = steps.some((item) => item.status === 'failed');
+      this.db.updateTaskRunStatus(runId, pending ? 'running' : failed ? 'failed' : 'done');
     }
 
     return {
@@ -148,5 +183,53 @@ export class TasksService {
       history,
     });
     return advice;
+  }
+
+  /** 失败后换掉后续步骤。优先采用扩展已校验的 steps，否则再问模型。 */
+  async replan(
+    runId: number,
+    body: {
+      failedSeq?: number;
+      lastError?: string;
+      pageSummary?: Record<string, unknown>;
+      history?: Array<{ role?: string; content?: string }>;
+      steps?: unknown;
+    },
+  ) {
+    const run = this.db.getTaskRun(runId);
+    if (!run) throw new NotFoundException('任务不存在');
+    const existing = this.db.listTaskSteps(runId);
+    const failedSeq = Number(body?.failedSeq || 0);
+    const failed = existing.find((item) => item.seq === failedSeq);
+    let reply = '';
+    let next = this.deepseek.acceptSteps(body?.steps);
+    if (!next.length) {
+      const planned = await this.deepseek.replanRemaining({
+        utterance: run.utterance,
+        failedStep: failed
+          ? { type: failed.type, query: failed.query, seq: failed.seq }
+          : { seq: failedSeq },
+        lastError: String(body?.lastError || ''),
+        pageSummary: body?.pageSummary || {},
+        history: body?.history,
+        doneSteps: existing
+          .filter((item) => item.status === 'done')
+          .map((item) => ({ type: item.type, query: item.query })),
+      });
+      reply = planned.reply;
+      next = planned.steps;
+    }
+    const inserted = this.db.replacePendingTail(runId, failedSeq, next);
+    return {
+      ok: true,
+      runId,
+      reply,
+      steps: inserted.map((step) => ({
+        seq: step.seq,
+        type: step.type,
+        query: step.query,
+        status: step.status,
+      })),
+    };
   }
 }
