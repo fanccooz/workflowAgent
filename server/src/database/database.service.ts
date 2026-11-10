@@ -20,7 +20,7 @@ export interface SuggestionCacheRow {
   based_on_event_id: number | null;
 }
 
-export type TaskRunStatus = 'planned' | 'running' | 'done' | 'failed' | 'cancelled';
+export type TaskRunStatus = 'planned' | 'running' | 'done' | 'failed' | 'cancelled' | 'waiting';
 export type TaskStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 
 export interface TaskRunRow {
@@ -31,6 +31,9 @@ export interface TaskRunRow {
   status: TaskRunStatus;
   created_at: string;
   updated_at: string;
+  durable?: number;
+  recurring?: number;
+  wait_note?: string;
 }
 
 export interface TaskStepRow {
@@ -95,6 +98,15 @@ export class DatabaseService implements OnModuleInit {
       CREATE INDEX IF NOT EXISTS idx_task_steps_run_seq
         ON task_steps (run_id, seq);
     `);
+    this.ensureTaskRunColumn('durable', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureTaskRunColumn('recurring', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureTaskRunColumn('wait_note', "TEXT NOT NULL DEFAULT ''");
+  }
+
+  private ensureTaskRunColumn(name: string, ddl: string) {
+    const cols = this.db.prepare('PRAGMA table_info(task_runs)').all() as unknown as Array<{ name: string }>;
+    if (cols.some((col) => col.name === name)) return;
+    this.db.exec(`ALTER TABLE task_runs ADD COLUMN ${name} ${ddl}`);
   }
 
   insertChatEvent(waromUserId: string, role: ChatRole, content: string): ChatEventRow {
@@ -271,5 +283,31 @@ export class DatabaseService implements OnModuleInit {
     }
     this.updateTaskRunStatus(runId, 'running');
     return inserted;
+  }
+
+  markRunWaiting(runId: number, waitNote: string, recurring: boolean) {
+    this.db
+      .prepare(
+        `UPDATE task_runs
+         SET status = 'waiting', durable = 1, recurring = ?, wait_note = ?, updated_at = datetime('now', 'localtime')
+         WHERE id = ?`,
+      )
+      .run(recurring ? 1 : 0, waitNote || '', runId);
+  }
+
+  touchRun(runId: number) {
+    this.db
+      .prepare(`UPDATE task_runs SET updated_at = datetime('now', 'localtime') WHERE id = ?`)
+      .run(runId);
+  }
+
+  listWaitingRuns(waromUserId: string): TaskRunRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM task_runs
+         WHERE warom_user_id = ? AND status = 'waiting'
+         ORDER BY updated_at ASC`,
+      )
+      .all(waromUserId) as unknown as TaskRunRow[];
   }
 }

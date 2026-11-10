@@ -7,6 +7,7 @@ export type ChatActionType =
   | 'open_workflow'
   | 'open_menu'
   | 'open_todo'
+  | 'approve_todo'
   | 'filter_list'
   | 'click_ui'
   | 'panel_minimize';

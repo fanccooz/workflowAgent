@@ -215,7 +215,7 @@
   }
 
   /** 把扩展已经拆好的步骤入库，执行时以库里的 seq 为准。 */
-  async function saveTaskPlan(utterance, reply, steps) {
+  async function saveTaskPlan(utterance, reply, steps, options) {
     const userId = await resolveWaromUserId();
     if (!userId) {
       return { ok: false, skipped: true, reason: 'no-user', message: '未识别到工号，请到设置里填写' };
@@ -227,6 +227,9 @@
         waromUserId: userId,
         utterance: String(utterance || '').trim().slice(0, 2000),
         reply: String(reply || '').slice(0, 2000),
+        durable: Boolean(options && options.durable),
+        recurring: Boolean(options && options.recurring),
+        waitNote: String((options && options.waitNote) || '').slice(0, 200),
         steps: list.map((step) => ({
           type: step && step.type,
           query: String((step && step.query) || '').slice(0, 200),
@@ -240,6 +243,37 @@
       steps: Array.isArray(data.steps) ? data.steps : [],
       userId,
     };
+  }
+
+  async function listWaitingTasks() {
+    const userId = await resolveWaromUserId();
+    if (!userId) return { ok: false, tasks: [] };
+    try {
+      const data = await apiFetch(`/api/tasks/waiting?waromUserId=${encodeURIComponent(userId)}`);
+      return { ok: true, tasks: data && Array.isArray(data.tasks) ? data.tasks : [] };
+    } catch (error) {
+      return { ok: false, tasks: [], message: error.message || '读取长期任务失败' };
+    }
+  }
+
+  async function finishWaitingTask(runId) {
+    if (!runId) return { ok: false };
+    try {
+      await apiFetch(`/api/tasks/${runId}/finish`, { method: 'POST', body: '{}' });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error.message };
+    }
+  }
+
+  async function touchWaitingTask(runId) {
+    if (!runId) return { ok: false };
+    try {
+      await apiFetch(`/api/tasks/${runId}/touch`, { method: 'POST', body: '{}' });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error.message };
+    }
   }
 
   /** 失败后用新步骤替换尚未执行的尾部。steps 为空时由服务端再规划。 */
@@ -305,6 +339,9 @@ resolveWaromUserId,
     fetchChatBoxSuggestion,
     planTask,
     saveTaskPlan,
+    listWaitingTasks,
+    finishWaitingTask,
+    touchWaitingTask,
     replanTask,
     startTaskRun,
     reportStep,

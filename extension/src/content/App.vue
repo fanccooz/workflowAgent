@@ -7,6 +7,7 @@ import {
   confirmLeaveSubmit,
   handleUtterance,
   openCandidate,
+  resumeWaitingTasks,
   suppressAutoOpenFromUrl,
 } from './legacy-runner';
 import { usePanelPosition } from './composables/usePanelPosition';
@@ -83,6 +84,16 @@ onMounted(async () => {
   if (headRef.value) enableDrag(headRef.value, { ignoreSelector: '.wf-head-actions' });
   if (toggleRef.value) enableDrag(toggleRef.value);
   suppressAutoOpenFromUrl().catch(() => {});
+  try {
+    const resumed = await resumeWaitingTasks();
+    const notes = resumed && Array.isArray(resumed.messages) ? resumed.messages.filter(Boolean) : [];
+    if (notes.length) {
+      log.value = `${log.value}\n\n${notes.join('\n\n')}`;
+      persistChat();
+    }
+  } catch {
+    // 长期任务续跑失败时不影响当前页
+  }
 });
 
 function addHabitSuggestion(text: string) {

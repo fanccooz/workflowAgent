@@ -1154,6 +1154,76 @@ import {
     return { status: 'open', message: `已在${where}写入「${key}」并触发查询。`, choices: [] };
   }
 
+  function clickDecisionButton(label) {
+    const buttons = [...document.querySelectorAll('button, .el-button, a')].filter((el) => isVisibleEl(el));
+    const hit = buttons.find((el) => {
+      const text = controlText(el);
+      if (/提交/.test(text)) return false;
+      return text === label;
+    });
+    if (!hit) return false;
+    hit.click();
+    return true;
+  }
+
+  function readVisibleGridRows() {
+    return [...document.querySelectorAll('.ag-center-cols-container .ag-row')].map((row) => ({
+      rowIndex: row.getAttribute('row-index'),
+      text: String(row.innerText || '').replace(/\s+/g, ' ').trim(),
+      el: row,
+    })).filter((row) => row.text && row.text !== '加载异常');
+  }
+
+  /** 打开我的待办，找到一条，再点同意或驳回。不点提交。 */
+  async function approveTodo(query, analysis) {
+    const parsed = TaskPlan.parseApprovalQuery(query);
+    const opened = await openCandidate({ type: 'todo', id: 'todo:entry', title: '我的待办' });
+    if (!opened || opened.status !== 'open') {
+      return opened || { status: 'error', message: '没有打开我的待办。', choices: [] };
+    }
+    await waitForListPageReady(10000);
+    await delay(400);
+    const rows = readVisibleGridRows();
+    const hit = parsed.keyword
+      ? rows.find((row) => row.text.replace(/\s+/g, '').includes(parsed.keyword))
+      : rows[0];
+    if (!hit) {
+      return {
+        status: 'error',
+        message: parsed.keyword ? `待办里没有找到「${parsed.keyword}」。` : '待办列表是空的。',
+        choices: [],
+      };
+    }
+    const right = hit.rowIndex == null
+      ? null
+      : document.querySelector(`.ag-pinned-right-cols-container .ag-row[row-index="${hit.rowIndex}"]`);
+    const operate = right
+      ? [...right.querySelectorAll('button, a, span')].find((el) => /办理|审批|处理|查看/.test(controlText(el)))
+      : null;
+    if (operate) operate.click();
+    else hit.el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    await delay(700);
+    const form = analysis && analysis.form;
+    const opinion = form && (form['审批意见'] || form['意见'] || form['备注']);
+    if (opinion) {
+      const area = [...document.querySelectorAll('textarea')].find((el) => isVisibleEl(el));
+      if (area) setNativeValue(area, String(opinion));
+    }
+    const clicked = clickDecisionButton(parsed.decision);
+    if (!clicked) {
+      return {
+        status: 'error',
+        message: `已打开待办「${hit.text.slice(0, 40)}」，但没有点到「${parsed.decision}」。`,
+        choices: [],
+      };
+    }
+    return {
+      status: 'open',
+      message: `已在待办中对「${hit.text.slice(0, 40)}」点击「${parsed.decision}」。未点击提交。`,
+      choices: [],
+    };
+  }
+
   async function executeChatAction(action, utterance, options) {
     const opts = options || {};
     const type = action && action.type ? action.type : 'none';
@@ -1189,6 +1259,9 @@ import {
       const opened = await openMenuByUtterance(query || utterance);
       if (opened && opened.status === 'open') await waitForListPageReady(10000);
       return { ...opened, choices: opened.choices || [] };
+    }
+    if (type === 'approve_todo') {
+      return approveTodo(query, opts.analysis);
     }
     if (type === 'open_todo') {
       const opened = await openCandidate({
@@ -1295,6 +1368,7 @@ import {
     let last = { status: 'chat', message: '', choices: [] };
     let executed = 0;
     let replans = 0;
+    let sameRetries = 0;
 
     if (runId && Habits) {
       Habits.startTaskRun(runId).catch(() => {});
@@ -1311,8 +1385,15 @@ import {
 
       last = await executeChatAction(action, utterance, { analysis });
 
-      const blocked = last.status === 'choose' || last.status === 'login';
+      const blocked = last.status === 'choose' || last.status === 'login' || TaskPlan.isHardStop(last);
+      if (stepLooksFailed(last) && !blocked && TaskPlan.shouldRetrySameStep(last, sameRetries)) {
+        sameRetries += 1;
+        queue.unshift(action);
+        if (last && last.message) stepMessages.push(`重试：${last.message}`);
+        continue;
+      }
       if (stepLooksFailed(last) && !blocked) {
+        sameRetries = 0;
         let replacement = [];
         let replanReply = '';
         if (replans < TaskPlan.MAX_REPLANS) {
@@ -1368,6 +1449,7 @@ import {
         Habits.reportStep(runId, seq, stepStatus, last.message || '', isLast).catch(() => {});
       }
 
+      sameRetries = 0;
       if (stepStatus === 'failed') break;
       if (queue.length && ['open_todo', 'open_menu', 'open_workflow'].includes(action.type)) {
         await delay(2000);
@@ -1480,6 +1562,32 @@ import {
     }
 
     let actionable = filterActionableSteps(actions);
+    const horizon = TaskPlan.classifyTaskHorizon(utterance);
+    if (horizon.durable) {
+      const remembered = actionable.length ? actionable : [{ type: 'open_todo', query: '我的待办' }];
+      let savedId = null;
+      if (Habits) {
+        try {
+          const saved = await Habits.saveTaskPlan(utterance, reply, remembered, horizon);
+          if (saved && saved.ok) savedId = saved.runId;
+        } catch (error) {
+          savedId = null;
+        }
+      }
+      const note = savedId
+        ? `已记为长期任务 #${savedId}。${horizon.waitNote}。下次打开助手会继续查看。`
+        : `这句话要事后再做。${horizon.waitNote}。当前没能写入任务库，请确认工号和 Nest 已启动。`;
+      return {
+        status: 'chat',
+        message: `助手：${reply || '好的。'}\n\n${note}`,
+        reply: reply || '好的。',
+        action: remembered[0],
+        actions: remembered,
+        plannedVia,
+        choices: [],
+        runId: savedId,
+      };
+    }
 
     if (!actionable.length) {
       return {
@@ -1661,10 +1769,51 @@ import {
     return true;
   });
 
+  async function resumeWaitingTasks() {
+    if (!Habits || typeof Habits.listWaitingTasks !== 'function') return { messages: [] };
+    let listed = null;
+    try {
+      listed = await Habits.listWaitingTasks();
+    } catch (error) {
+      return { messages: [] };
+    }
+    const tasks = (listed && listed.tasks) || [];
+    const due = tasks.filter((task) => TaskPlan.shouldResumeNow(task, new Date())).slice(0, 1);
+    const messages = [];
+    for (let i = 0; i < due.length; i += 1) {
+      const task = due[i];
+      if (visibleDialogs().some(isWorkflowLaunchDialog)) {
+        messages.push(`长期任务 #${task.runId} 仍在：${task.utterance}。当前有流程弹窗，先不打断。`);
+        continue;
+      }
+      const pending = (task.steps || []).filter((step) => step.status === 'pending' || step.status === 'running');
+      const steps = pending.length ? pending : [{ type: 'open_todo', query: '我的待办' }];
+      const exec = await executeChatActions(steps, task.utterance || '', {
+        runId: task.runId,
+        history: [],
+        analysis: null,
+      });
+      const page = collectPageRaw();
+      const approved = /已在待办中/.test((exec && exec.message) || '');
+      const matched = TaskPlan.reminderMatched(task.utterance, (page && page.visibleText) || '');
+      if (task.recurring) {
+        await Habits.touchWaitingTask(task.runId);
+        messages.push(`已查看长期任务 #${task.runId}：${task.utterance}\n${(exec && exec.message) || ''}`);
+      } else if (approved || matched) {
+        await Habits.finishWaitingTask(task.runId);
+        messages.push(`长期任务 #${task.runId} 已完成：${task.utterance}\n${(exec && exec.message) || ''}`);
+      } else {
+        messages.push(`长期任务 #${task.runId} 还在等：${task.utterance}`);
+      }
+    }
+    return { messages };
+  }
+
 export {
   handleUtterance,
   confirmLeaveSubmit,
   openCandidate,
   suppressAutoOpenFromUrl,
+  resumeWaitingTasks,
 };
 

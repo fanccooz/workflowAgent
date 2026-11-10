@@ -64,6 +64,7 @@ export class TasksService {
     utterance: string,
     reply: string,
     rawSteps: unknown,
+    options?: { durable?: boolean; recurring?: boolean; waitNote?: string },
   ) {
     const userId = String(waromUserId || '').trim();
     const text = String(utterance || '').trim();
@@ -80,10 +81,14 @@ export class TasksService {
         query: step.query,
       })),
     );
+    if (options?.durable) {
+      this.db.markRunWaiting(run.id, String(options.waitNote || ''), Boolean(options.recurring));
+    }
+    const stored = this.db.getTaskRun(run.id);
     return {
       runId: run.id,
       reply: run.reply,
-      status: run.status,
+      status: stored?.status || run.status,
       steps: steps.map((step) => ({
         seq: step.seq,
         type: step.type,
@@ -91,6 +96,43 @@ export class TasksService {
         status: step.status,
       })),
     };
+  }
+
+  listWaiting(waromUserId: string) {
+    const userId = String(waromUserId || '').trim();
+    if (!userId) throw new BadRequestException('缺少 waromUserId');
+    const runs = this.db.listWaitingRuns(userId);
+    return {
+      tasks: runs.map((run) => ({
+        runId: run.id,
+        utterance: run.utterance,
+        reply: run.reply,
+        status: run.status,
+        recurring: Boolean(run.recurring),
+        waitNote: run.wait_note || '',
+        updatedAt: run.updated_at,
+        steps: this.db.listTaskSteps(run.id).map((step) => ({
+          seq: step.seq,
+          type: step.type,
+          query: step.query,
+          status: step.status,
+        })),
+      })),
+    };
+  }
+
+  finishRun(runId: number) {
+    const run = this.db.getTaskRun(runId);
+    if (!run) throw new NotFoundException('任务不存在');
+    this.db.updateTaskRunStatus(runId, 'done');
+    return { ok: true, runId, status: 'done' };
+  }
+
+  touchRun(runId: number) {
+    const run = this.db.getTaskRun(runId);
+    if (!run) throw new NotFoundException('任务不存在');
+    this.db.touchRun(runId);
+    return { ok: true, runId, status: run.status };
   }
 
   getRun(runId: number) {

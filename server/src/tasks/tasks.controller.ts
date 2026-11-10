@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ExtensionTokenGuard } from '../auth/extension-token.guard';
 import { TasksService } from './tasks.service';
 
@@ -31,6 +31,9 @@ export class TasksController {
       utterance?: string;
       reply?: string;
       steps?: unknown;
+      durable?: boolean;
+      recurring?: boolean;
+      waitNote?: string;
     },
   ) {
     return this.tasks.save(
@@ -38,12 +41,32 @@ export class TasksController {
       String(body?.utterance || ''),
       String(body?.reply || ''),
       body?.steps,
+      {
+        durable: Boolean(body?.durable),
+        recurring: Boolean(body?.recurring),
+        waitNote: String(body?.waitNote || ''),
+      },
     );
+  }
+
+  @Get('waiting')
+  waiting(@Query('waromUserId') waromUserId?: string) {
+    return this.tasks.listWaiting(String(waromUserId || ''));
   }
 
   @Get(':runId')
   get(@Param('runId') runId: string) {
     return this.tasks.getRun(Number(runId));
+  }
+
+  @Post(':runId/finish')
+  finish(@Param('runId') runId: string) {
+    return this.tasks.finishRun(Number(runId));
+  }
+
+  @Post(':runId/touch')
+  touch(@Param('runId') runId: string) {
+    return this.tasks.touchRun(Number(runId));
   }
 
   @Post(':runId/start')

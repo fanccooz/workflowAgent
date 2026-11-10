@@ -97,6 +97,7 @@
       '动作约定：',
       '- none：闲聊、或仅问答当前页信息（如有多少条）。',
       '- open_workflow / open_menu / open_todo：用户要去某页、办某事、看某模块，或当前页办不成需要换页时，直接打开，不要说「不能打开」。',
+      '- approve_todo：在待办里同意或驳回某一条。query 写决定和关键字，例如「同意 请假」。不要点击提交。',
       '- filter_list：仅当用户说搜索/筛选/过滤/查找时用；query 只要纯关键字。',
       '- click_ui：点击查看草稿、选择草稿、保存草稿等。禁止点击「提交」。',
       '- panel_minimize：最小化本流程助手面板。',
@@ -107,7 +108,7 @@
       '硬性：切换流程只关闭当前弹窗，不提交。用户说最小化 → panel_minimize。',
       '禁止：actions 为 none 时在 reply 写「已点开/已打开/已提交/已最小化」。',
       '只输出一个 JSON 对象，不要 Markdown：',
-      '{"summary":{"form":{"事由":"头疼"},"nextClicks":["按钮名"]},"reply":"给用户看的话","actions":[{"type":"none|leave.open_fill|form.open_fill|open_workflow|open_menu|open_todo|filter_list|click_ui|panel_minimize","query":"短句"}]}',
+      '{"summary":{"form":{"事由":"头疼"},"nextClicks":["按钮名"]},"reply":"给用户看的话","actions":[{"type":"none|leave.open_fill|form.open_fill|open_workflow|open_menu|open_todo|approve_todo|filter_list|click_ui|panel_minimize","query":"短句"}]}',
       '示例：「帮我请假两天，明天开始，事由头疼」→ leave.open_fill(query:请假)，summary.form 写日期和事由。',
       '「打开请假流程」→ open_workflow(query:请假)；「搜索通用流程」→ filter_list。',
     ].join('');

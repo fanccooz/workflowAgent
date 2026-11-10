@@ -147,6 +147,7 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
     'open_workflow',
     'open_menu',
     'open_todo',
+    'approve_todo',
     'filter_list',
     'click_ui',
     'panel_minimize',
@@ -407,6 +408,15 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
     });
   }
 
+  /** 待办里的同意/驳回走跨页面审批，不拆成普通点击。 */
+  function enforceApproval(utterance, actions) {
+    const text = String(utterance || '').replace(/\s+/g, '');
+    if (/怎么|如何|是什么/.test(text)) return actions;
+    if (!/待办|待审|待我/.test(text)) return actions;
+    if (!/同意|驳回|拒绝|不同意|通过/.test(text)) return actions;
+    return [{ type: 'approve_todo', query: text }];
+  }
+
   /** 校验动作类型；summary 由模型自设；打开/搜索冲突时按关键词纠正 */
   function sanitizeChatAction(raw, utterance) {
     const data = raw && typeof raw === 'object' ? raw : {};
@@ -427,6 +437,7 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
     actions = enforceClickIntent(utterance || '', actions);
     actions = hydrateClicksFromModel(reply, summary, actions);
     actions = enforceModelFormFill(utterance || '', actions, summary, reply);
+    actions = enforceApproval(utterance || '', actions);
     const hadSubmit = actions.some((item) => item.type === 'click_ui' && isFormSubmitLabel(item.query));
     actions = actions.filter((item) => !(item.type === 'click_ui' && isFormSubmitLabel(item.query)));
     if (hadSubmit || (isFormSubmitLabel(utterance) && !actions.some((item) => item.type && item.type !== 'none'))) {
