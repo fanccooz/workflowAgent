@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { DatabaseSync } from 'node:sqlite';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -50,8 +50,11 @@ export interface TaskStepRow {
 }
 
 @Injectable()
-export class DatabaseService implements OnModuleInit {
+export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private db!: DatabaseSync;
+  private purgeTimer: ReturnType<typeof setInterval> | null = null;
+  /** 对话和任务只留最近这么多天。suggestion_cache 不参与清理。 */
+  private static readonly RETENTION_DAYS = 5;
 
   onModuleInit() {
     const dir = path.join(process.cwd(), 'data');
@@ -118,6 +121,64 @@ export class DatabaseService implements OnModuleInit {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[suggestion_cache] 表结构还没改完：${message}`);
+    }
+    try {
+      const removed = this.purgeExpiredRows();
+      const total = removed.chatEvents + removed.taskRuns + removed.taskSteps;
+      if (total) {
+        console.log(`[retention] 已删除超过 ${DatabaseService.RETENTION_DAYS} 天的数据：对话 ${removed.chatEvents}，任务 ${removed.taskRuns}，步骤 ${removed.taskSteps}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[retention] 清理失败：${message}`);
+    }
+    this.purgeTimer = setInterval(() => {
+      try {
+        this.purgeExpiredRows();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[retention] 清理失败：${message}`);
+      }
+    }, 6 * 60 * 60 * 1000);
+  }
+
+  onModuleDestroy() {
+    if (this.purgeTimer) clearInterval(this.purgeTimer);
+    this.purgeTimer = null;
+  }
+
+  /** 删除五天前的对话、任务和对应步骤。suggestion_cache 整表保留。 */
+  purgeExpiredRows(days = DatabaseService.RETENTION_DAYS) {
+    const cutoff = `-${Math.max(1, Number(days) || DatabaseService.RETENTION_DAYS)} days`;
+    const before = (column: string) => `${column} < datetime('now', 'localtime', ?)`;
+    const changes = (result: { changes?: number | bigint }) => Number(result?.changes || 0);
+    this.db.exec('BEGIN');
+    try {
+      const chatEvents = changes(this.db
+        .prepare(`DELETE FROM chat_events WHERE ${before('created_at')}`)
+        .run(cutoff));
+      const taskSteps = changes(this.db
+        .prepare(
+          `DELETE FROM task_steps WHERE run_id IN (
+             SELECT id FROM task_runs WHERE ${before('updated_at')}
+           )`,
+        )
+        .run(cutoff));
+      const taskRuns = changes(this.db
+        .prepare(`DELETE FROM task_runs WHERE ${before('updated_at')}`)
+        .run(cutoff));
+      this.db
+        .prepare(`DELETE FROM task_steps WHERE run_id NOT IN (SELECT id FROM task_runs)`)
+        .run();
+      this.db.exec('COMMIT');
+      return { chatEvents, taskRuns, taskSteps };
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch (rollbackError) {
+        // 事务没开成时保留原始错误
+      }
+      throw error;
     }
   }
 
