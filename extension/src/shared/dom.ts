@@ -34,9 +34,27 @@ export function visibleDialogs() {
   });
 }
 
+/** 华荣流程发起弹窗（各流程通用：有基础信息 + 提交/取消） */
 export function isWorkflowLaunchDialog(dialog) {
   const text = (dialog && dialog.innerText) || '';
   return /基础信息/.test(text) && (/提\s*交/.test(text) || /取\s*消/.test(text) || /提交|取消/.test(text));
+}
+
+/**
+ * 会挡住换页的应用内表单弹窗。不限定请假，凡是带表单且有取消/关闭/提交的 el-dialog 都算。
+ * 助手自己的面板不关。
+ */
+export function isBlockingFormDialog(dialog) {
+  if (!dialog || !dialog.closest) return false;
+  if (dialog.closest('#warom-agent-host, #wf-agent-host, .wf-root, .wf-panel')) return false;
+  if (isWorkflowLaunchDialog(dialog)) return true;
+  const text = String(dialog.innerText || '');
+  const hasForm = Boolean(dialog.querySelector('.el-form, .el-form-item, form, .el-input, .el-select, textarea'));
+  const hasCancelOrClose = /取\s*消|关\s*闭/.test(text);
+  const hasSubmit = /提\s*交/.test(text);
+  if (hasForm && (hasCancelOrClose || hasSubmit)) return true;
+  if (hasCancelOrClose && hasSubmit) return true;
+  return false;
 }
 
 export function isInSidebar(el) {

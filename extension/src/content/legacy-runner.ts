@@ -7,12 +7,14 @@ import * as Agent from '@/shared/agent';
 import * as Tools from '@/shared/tools';
 import * as Habits from '@/shared/habits';
 import * as TaskPlan from '@/shared/taskplan';
+import * as FillLock from '@/shared/fill-lock';
 import { MSG, LIST_HASH } from '@/shared/types';
 import {
   delay,
   waitFor,
   visibleDialogs,
   isWorkflowLaunchDialog,
+  isBlockingFormDialog,
   tableLoadFailed,
   isInSidebar,
   isVisibleEl,
@@ -138,31 +140,172 @@ import {
     closeUsedThisTurn = false;
   }
 
-  /** 一次用户指令里最多关一次。只点取消或关闭，确认框不点「提交」。 */
-  async function closeWorkflowDialogs() {
-    if (closeUsedThisTurn) return;
-    closeUsedThisTurn = true;
-    const dialog = visibleDialogs().find(isWorkflowLaunchDialog)
-      || visibleDialogs().find((item) => /基础信息/.test(item.innerText || '') && /取\s*消|关\s*闭/.test(item.innerText || ''));
-    if (!dialog) return;
-    const cancel = [...dialog.querySelectorAll('button')].find((button) => /^(取消|关闭)$/.test(controlText(button)));
-    const closeButton = dialog.querySelector('.el-dialog__headerbtn, .el-dialog__close');
-    const button = cancel || closeButton;
-    if (!button) return;
-    button.click();
-    await delay(250);
-    const boxes = [...document.querySelectorAll('.el-message-box__wrapper, .el-message-box')].filter((item) => {
-      const style = getComputedStyle(item);
-      return style.display !== 'none' && style.visibility !== 'hidden';
+  function listBlockingDialogs() {
+    return visibleDialogs().filter(isBlockingFormDialog);
+  }
+
+  function dialogLooksLikeTarget(dialog, name) {
+    const text = String((dialog && dialog.innerText) || '').replace(/\s+/g, '');
+    const want = String(name || '').replace(/\s+/g, '');
+    if (!text || !want) return false;
+    const core = want.replace(/(流程|申请)$/g, '');
+    return text.includes(want) || (core.length >= 2 && text.includes(core));
+  }
+
+  function isVisibleOverlay(el) {
+    if (!el) return false;
+    const style = getComputedStyle(el);
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+  }
+
+  function clickDom(el) {
+    if (!el) return false;
+    try {
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      if (typeof el.click === 'function') el.click();
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /** 平台「确认关闭 / 是否放弃」一类二次确认（message-box 或小对话框）。绝不点提交。 */
+  function listConfirmClosePrompts() {
+    const boxes = [...document.querySelectorAll(
+      '.el-message-box__wrapper, .el-overlay-message-box, .el-message-box, .el-overlay.is-message-box',
+    )].filter((item) => {
+      const box = item.classList && item.classList.contains('el-message-box')
+        ? item
+        : (item.querySelector && item.querySelector('.el-message-box')) || item;
+      return isVisibleOverlay(item) && isVisibleOverlay(box);
     });
-    const box = boxes[boxes.length - 1];
-    if (!box) return;
-    const buttons = [...box.querySelectorAll('button')];
-    const discard = buttons.find((item) => /不保存|放弃|不提交/.test(controlText(item)));
-    const confirmClose = buttons.find((item) => /^(确定|确认|是)$/.test(controlText(item)) && !/提交/.test(controlText(item)));
-    const pick = discard || confirmClose;
-    if (pick) pick.click();
+
+    const confirmDialogs = visibleDialogs().filter((dialog) => {
+      if (isWorkflowLaunchDialog(dialog)) return false;
+      if (dialog.closest('#warom-agent-host, #wf-agent-host, .wf-root, .wf-panel')) return false;
+      const text = String(dialog.innerText || '').replace(/\s+/g, '');
+      if (/基础信息/.test(text) && /提交/.test(text)) return false;
+      const looksConfirm = /是否关闭|确认关闭|未保存|是否放弃|放弃编辑|离开当前|是否离开|关闭当前|数据尚未|内容尚未|是否继续/.test(text);
+      const buttons = [...dialog.querySelectorAll('button, .el-button')];
+      const hasOk = buttons.some((b) => /^(确定|确认|是|关闭|不保存|放弃)$/.test(controlText(b)));
+      const hasCancel = buttons.some((b) => /^(取消|否)$/.test(controlText(b)));
+      return looksConfirm || (hasOk && hasCancel && buttons.length <= 4 && !/提交/.test(text));
+    });
+
+    return [...boxes, ...confirmDialogs];
+  }
+
+  /** 点掉确认关闭弹窗：优先「不保存/放弃」，否则点「确定/确认」。 */
+  async function confirmClosePromptIfAny() {
+    const prompts = listConfirmClosePrompts();
+    if (!prompts.length) return false;
+    const prompt = prompts[prompts.length - 1];
+    const root = (prompt.classList && prompt.classList.contains('el-message-box'))
+      ? prompt
+      : (prompt.querySelector && prompt.querySelector('.el-message-box')) || prompt;
+    const boxButtons = [...root.querySelectorAll('button, .el-button')].filter((item) => {
+      const text = controlText(item);
+      return text && !/提交/.test(text);
+    });
+    const discard = boxButtons.find((item) => /不保存|放弃|不提交|离开|丢弃/.test(controlText(item)));
+    const confirmClose = boxButtons.find((item) => {
+      const text = controlText(item);
+      return /^(确定|确认|是|关闭|OK|Yes)$/i.test(text);
+    });
+    const primary = boxButtons.find((item) => item.classList && item.classList.contains('el-button--primary')
+      && !/取消|否|提交/.test(controlText(item)));
+    const pick = discard || confirmClose || primary;
+    if (!pick) return false;
+    clickDom(pick);
+    await delay(320);
+    return true;
+  }
+
+  /**
+   * 关掉挡路表单弹窗。
+   * 流程：点取消/关闭 → 等确认关闭弹窗 → 点确定 → 再进其他页。
+   * - leaveCurrentForm：明确要离开当前表（进菜单/待办/首页）时才允许在回填中关窗
+   * - keepMatch：保留已是目标流程的弹窗，避免「为了打开又先把自己关掉」
+   * 绝不点「提交」。
+   */
+  async function closeWorkflowDialogs(options) {
+    const opts = options || {};
+    const force = Boolean(opts.force);
+    const leaveCurrentForm = Boolean(opts.leaveCurrentForm);
+    const keepMatch = opts.keepMatch ? String(opts.keepMatch) : '';
+    if (FillLock.isFormFillActive() && !leaveCurrentForm) {
+      return false;
+    }
+    if (!force && closeUsedThisTurn) return false;
+    closeUsedThisTurn = true;
+
+    const remaining = () => listBlockingDialogs().filter((dialog) => {
+      if (keepMatch && dialogLooksLikeTarget(dialog, keepMatch)) return false;
+      return true;
+    });
+
+    for (let round = 0; round < 5; round += 1) {
+      // 上一轮可能已经弹出确认框，先点确认
+      await confirmClosePromptIfAny();
+      if (!remaining().length) return true;
+
+      const dialogs = remaining();
+      const dialog = dialogs[dialogs.length - 1];
+      const footer = dialog.querySelector('.el-dialog__footer, .dialog-footer, .el-drawer__footer');
+      const scope = footer || dialog;
+      const buttons = [...scope.querySelectorAll('button, .el-button, a')];
+      const cancel = buttons.find((button) => {
+        const text = controlText(button);
+        return /^(取消|关闭)$/.test(text);
+      }) || buttons.find((button) => {
+        const text = controlText(button);
+        return /取消|关闭/.test(text) && !/提交|确定提交|确认提交/.test(text);
+      });
+      const closeButton = dialog.querySelector('.el-dialog__headerbtn, .el-dialog__close, button.el-dialog__headerbtn');
+      const button = cancel || closeButton;
+      if (!button) {
+        // 没有取消按钮时，再试一次确认框（可能已经在问是否关闭）
+        if (!(await confirmClosePromptIfAny())) break;
+        continue;
+      }
+      clickDom(button);
+
+      // 等确认关闭弹窗出来再点确定
+      let confirmed = false;
+      for (let wait = 0; wait < 8; wait += 1) {
+        await delay(180);
+        if (await confirmClosePromptIfAny()) {
+          confirmed = true;
+          break;
+        }
+        if (!remaining().length) return true;
+      }
+      if (!confirmed) await delay(200);
+    }
+
+    // 最后再清一次残留确认框
+    await confirmClosePromptIfAny();
     await delay(200);
+    return remaining().length === 0;
+  }
+
+  /** 明确离开当前表单（进菜单/待办/首页等）时才关窗：关表单 → 确认关闭 → 再导航。 */
+  async function ensureDialogsClosedForNavigation() {
+    if (!listBlockingDialogs().length && !listConfirmClosePrompts().length) return true;
+    let closed = await closeWorkflowDialogs({ force: true, leaveCurrentForm: true });
+    if (!closed) {
+      await delay(350);
+      closeUsedThisTurn = false;
+      closed = await closeWorkflowDialogs({ force: true, leaveCurrentForm: true });
+    }
+    if (!closed) {
+      await delay(350);
+      closeUsedThisTurn = false;
+      closed = await closeWorkflowDialogs({ force: true, leaveCurrentForm: true });
+    }
+    return closed;
   }
 
   function currentCode() {
@@ -188,11 +331,11 @@ import {
     // early-clean 可能已清 URL；这里再补关弹窗，并短时重试。
     for (let attempt = 0; attempt < 25; attempt += 1) {
       clearEmbedCodeFromHash();
-      const opened = visibleDialogs().some(isWorkflowLaunchDialog);
+      const opened = listBlockingDialogs().length > 0;
       if (opened || currentCode()) {
-        await closeWorkflowDialogs();
+        await closeWorkflowDialogs({ force: true });
         clearEmbedCodeFromHash();
-        if (!visibleDialogs().some(isWorkflowLaunchDialog) && !currentCode()) return;
+        if (!listBlockingDialogs().length && !currentCode()) return;
       } else if (attempt >= 8) {
         // 等了一会儿都没有自动弹窗，结束。
         return;
@@ -372,14 +515,16 @@ import {
   }
 
   async function openWorkflowRow(match) {
-    const alreadyOpen = visibleDialogs().some((dialog) => dialog.innerText.includes(match.name)
-      && isWorkflowLaunchDialog(dialog));
+    const alreadyOpen = visibleDialogs().some((dialog) => (
+      isWorkflowLaunchDialog(dialog) && dialogLooksLikeTarget(dialog, match.name)
+    ));
     if (alreadyOpen) {
       clearEmbedCodeFromHash();
       return { status: 'open', message: `「${match.name}」的发起弹窗已经打开。` };
     }
 
-    await closeWorkflowDialogs();
+    // 只关掉其它挡路弹窗，保留已是目标流程的窗；回填中也不会为了「再打开一次」把自己关了
+    await closeWorkflowDialogs({ force: true, keepMatch: match.name });
     await delay(150);
 
     let openedByClick = clickNewWorkflow(match);
@@ -477,6 +622,13 @@ import {
 
   async function openMenuCandidate(item) {
     if (!item) return { status: 'error', message: '没有可打开的菜单。' };
+    const closed = await ensureDialogsClosedForNavigation();
+    if (!closed && (listBlockingDialogs().length || listConfirmClosePrompts().length)) {
+      return {
+        status: 'error',
+        message: '表单还没关掉（确认关闭弹窗可能还在）。请点确认关闭后再说一次，或再说「打开首页」。',
+      };
+    }
     const title = item.title;
     const path = Array.isArray(item.path) ? item.path : [];
     await expandMenuPath(path);
@@ -515,6 +667,7 @@ import {
     }
     if (item.type === 'todo') {
       if (item.id === 'todo:entry') {
+        await ensureDialogsClosedForNavigation();
         const ok = clickMenuByTitle('我的待办') || clickMenuByTitle('待办');
         return ok
           ? { status: 'open', message: '已尝试进入「我的待办」。' }
@@ -571,7 +724,46 @@ import {
     return [];
   }
 
+  async function openHomePage() {
+    const closed = await ensureDialogsClosedForNavigation();
+    if (!closed && (listBlockingDialogs().length || listConfirmClosePrompts().length)) {
+      return {
+        status: 'error',
+        message: '还没关掉当前表单（需要先确认关闭）。请点确认关闭后再说「打开首页」。',
+      };
+    }
+    const titles = ['首页', '主页', '工作台', '门户', '首页门户'];
+    for (const title of titles) {
+      const hit = menusFindByTitle(title);
+      if (hit) return openMenuCandidate(hit);
+      if (clickMenuByTitle(title)) {
+        await delay(250);
+        return { status: 'open', message: `已打开「${title}」。` };
+      }
+    }
+    // 侧栏点不到时，退回常见首页路由
+    const candidates = ['#/', '#/home', '#/index', '#/dashboard', '#/portal'];
+    const current = String(location.hash || '').split('?')[0];
+    for (const hash of candidates) {
+      if (current === hash) {
+        return { status: 'open', message: '已在首页。' };
+      }
+    }
+    location.hash = '#/';
+    await delay(300);
+    return { status: 'open', message: '已尝试进入首页。' };
+  }
+
+  function menusFindByTitle(title) {
+    const want = String(title || '').replace(/\s+/g, '');
+    return collectMenus().find((item) => String(item.title || '').replace(/\s+/g, '') === want) || null;
+  }
+
   async function openMenuByUtterance(utterance) {
+    const text = String(utterance || '').replace(/\s+/g, '');
+    if (/首页|主页|工作台|门户/.test(text)) {
+      return openHomePage();
+    }
     const menus = collectMenus();
     const result = Match.matchMenus(utterance, menus);
     if (result.status === 'open' && result.matches[0]) {
@@ -1258,6 +1450,17 @@ import {
     if (type === 'none') {
       return { status: 'chat', message: '', choices: [] };
     }
+
+    // 只有明确离开当前表单时才关窗。打开/回填流程本身不在这里关，避免和回填打架。
+    const leavesCurrentForm = [
+      'open_menu',
+      'open_todo',
+      'approve_todo',
+    ].includes(type);
+    if (leavesCurrentForm) {
+      await ensureDialogsClosedForNavigation();
+    }
+
     if (type === 'leave.open_fill' || type === 'form.open_fill') {
       return runLeaveAgent(utterance, {
         goal: type,
@@ -1305,6 +1508,10 @@ import {
       return applyListFilter(normalizeFilterKeyword(query, utterance), utterance);
     }
     if (type === 'click_ui') {
+      // 回填中不因点击去关窗；仅在未回填且弹窗挡住时，才按离开表单处理
+      if (listBlockingDialogs().length && !FillLock.isFormFillActive()) {
+        await ensureDialogsClosedForNavigation();
+      }
       return clickUiByLabel(query, utterance);
     }
     if (type === 'panel_minimize') {
@@ -1808,8 +2015,8 @@ import {
     const messages = [];
     for (let i = 0; i < due.length; i += 1) {
       const task = due[i];
-      if (visibleDialogs().some(isWorkflowLaunchDialog)) {
-        messages.push(`长期任务 #${task.runId} 仍在：${task.utterance}。当前有流程弹窗，先不打断。`);
+      if (listBlockingDialogs().length) {
+        messages.push(`长期任务 #${task.runId} 仍在：${task.utterance}。当前有表单弹窗，先不打断。`);
         continue;
       }
       const pending = (task.steps || []).filter((step) => step.status === 'pending' || step.status === 'running');

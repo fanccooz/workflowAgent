@@ -181,6 +181,18 @@ it('不能把提交变成点击', () => {
   assert.match(chat.reply, /手动/);
 });
 
+it('打开首页走菜单而不是流程', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '好的',
+      actions: [{ type: 'open_workflow', query: '首页' }],
+    },
+    '打开首页',
+  );
+  assert.equal(chat.action.type, 'open_menu');
+  assert.equal(chat.action.query, '首页');
+});
+
 it('模型判定为聊天时不执行打开', () => {
   const chat = sanitizeChatAction(
     {

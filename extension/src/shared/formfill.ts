@@ -15,7 +15,7 @@
   function utteranceHasFillHints(utterance) {
     const text = String(utterance || '').replace(/\s+/g, '');
     if (!text || isPureOpenRequest(text)) return false;
-    return /给.{1,12}(留言|发信|发消息)|留言给|接收人|收件人|发给|抄送|事由|原因|因为|标题|内容|说明|备注|明天|后天|今天|两天|三天|\d+天|病假|事假|开会/.test(text);
+    return /给.{1,12}(留言|发信|发消息)|留言给|接收人|收件人|发给|抄送|事由|原因|因为|标题|内容|说明|备注|明天|后天|今天|两天|三天|\d+天|开会/.test(text);
   }
 
   /** 从原话猜流程短名，供 open_workflow / form.open_fill 的 query */

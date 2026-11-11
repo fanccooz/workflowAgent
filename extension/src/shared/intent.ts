@@ -248,9 +248,20 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
     let list = Array.isArray(actions) ? actions.slice() : [];
     if (!text) return list;
 
+    // 门户/工作台类页面走菜单，不是流程
+    if (/打开首页|回到首页|去首页|进入首页|回首页|^首页$/.test(text)) {
+      return [{ type: 'open_menu', query: '首页' }];
+    }
+    if (/打开主页|进入主页|去主页|^主页$/.test(text)) {
+      return [{ type: 'open_menu', query: '主页' }];
+    }
+    if (/打开工作台|进入工作台|去工作台|^工作台$/.test(text)) {
+      return [{ type: 'open_menu', query: '工作台' }];
+    }
+
     const saidSearch = /搜索|筛选|过滤|查找/.test(text);
     const saidOpen = /打开|进入|发起|新建|帮我开|(?:^|[，,。；;])去/.test(text);
-    const saidMenu = /菜单|模块|页面|导航|流程定义/.test(text);
+    const saidMenu = /菜单|模块|页面|导航|流程定义|首页|主页|工作台|门户|考勤|人事|财务|办公/.test(text);
     const saidTodo = /待办/.test(text);
 
     // 纯搜索：只留 filter_list

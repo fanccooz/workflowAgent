@@ -95,6 +95,7 @@
 
     if (obs.launchDialogOpen && dialogMatchesTarget(obs, task)) {
       if (!task.formFilled) {
+        // 等弹窗字段就绪后：先把真实表单交给模型分析，再回填
         return tool('ai_fill_form', { utterance: task.utterance });
       }
       if (!task.requiredChecked) {
@@ -107,8 +108,8 @@
         task,
         'filled',
         openMissing
-          ? `已按分析回填，未提交。仍缺：${openMissing}。`
-          : '已按分析回填，未提交。',
+          ? `已按打开后的表单分析回填，未提交。仍缺：${openMissing}。`
+          : '已按打开后的表单分析回填，未提交。',
       );
     }
 

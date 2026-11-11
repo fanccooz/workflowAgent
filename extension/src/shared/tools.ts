@@ -2,12 +2,14 @@
 import * as LeaveSkill from './leave';
 import * as FormFill from './formfill';
 import * as AgentApi from './agent';
+import * as FillLock from './fill-lock';
 import { LIST_HASH } from './types';
 import {
   delay,
   waitFor,
   visibleDialogs,
   isWorkflowLaunchDialog,
+  isBlockingFormDialog,
   tableLoadFailed,
   findVueInstance,
   setNativeValue,
@@ -73,7 +75,96 @@ import {
     return true;
   }
 
+  function btnText(el) {
+    return String((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, '');
+  }
+
+  function clickDom(el) {
+    if (!el) return false;
+    try {
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      if (typeof el.click === 'function') el.click();
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function listConfirmClosePrompts() {
+    const boxes = [...document.querySelectorAll(
+      '.el-message-box__wrapper, .el-overlay-message-box, .el-message-box, .el-overlay.is-message-box',
+    )].filter((item) => {
+      const style = getComputedStyle(item);
+      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    });
+    const confirmDialogs = visibleDialogs().filter((dialog) => {
+      if (isWorkflowLaunchDialog(dialog)) return false;
+      const text = String(dialog.innerText || '').replace(/\s+/g, '');
+      if (/基础信息/.test(text) && /提交/.test(text)) return false;
+      const looksConfirm = /是否关闭|确认关闭|未保存|是否放弃|放弃编辑|离开当前|是否离开|关闭当前|数据尚未|内容尚未/.test(text);
+      const buttons = [...dialog.querySelectorAll('button, .el-button')];
+      const hasOk = buttons.some((b) => /^(确定|确认|是|关闭|不保存|放弃)$/.test(btnText(b)));
+      const hasCancel = buttons.some((b) => /^(取消|否)$/.test(btnText(b)));
+      return looksConfirm || (hasOk && hasCancel && buttons.length <= 4 && !/提交/.test(text));
+    });
+    return [...boxes, ...confirmDialogs];
+  }
+
+  async function confirmClosePromptIfAny() {
+    const prompts = listConfirmClosePrompts();
+    if (!prompts.length) return false;
+    const prompt = prompts[prompts.length - 1];
+    const root = (prompt.classList && prompt.classList.contains('el-message-box'))
+      ? prompt
+      : (prompt.querySelector && prompt.querySelector('.el-message-box')) || prompt;
+    const boxButtons = [...root.querySelectorAll('button, .el-button')].filter((item) => !/提交/.test(btnText(item)));
+    const discard = boxButtons.find((item) => /不保存|放弃|不提交|离开|丢弃/.test(btnText(item)));
+    const confirmClose = boxButtons.find((item) => /^(确定|确认|是|关闭|OK|Yes)$/i.test(btnText(item)));
+    const primary = boxButtons.find((item) => item.classList && item.classList.contains('el-button--primary')
+      && !/取消|否|提交/.test(btnText(item)));
+    const pick = discard || confirmClose || primary;
+    if (!pick) return false;
+    clickDom(pick);
+    await delay(300);
+    return true;
+  }
+
+  /** 进流程列表前清掉挡路弹窗：关表单 → 确认关闭。不点提交。回填进行中不关。 */
+  async function dismissBlockingDialogs() {
+    if (FillLock.isFormFillActive()) return false;
+    for (let round = 0; round < 5; round += 1) {
+      await confirmClosePromptIfAny();
+      const dialogs = visibleDialogs().filter(isBlockingFormDialog);
+      if (!dialogs.length) return true;
+      const dialog = dialogs[dialogs.length - 1];
+      const footer = dialog.querySelector('.el-dialog__footer, .dialog-footer, .el-drawer__footer');
+      const scope = footer || dialog;
+      const buttons = [...scope.querySelectorAll('button, .el-button, a')];
+      const cancel = buttons.find((button) => {
+        const text = btnText(button);
+        return /^(取消|关闭)$/.test(text) || (/取消|关闭/.test(text) && !/提交/.test(text));
+      });
+      const closeButton = dialog.querySelector('.el-dialog__headerbtn, .el-dialog__close');
+      const target = cancel || closeButton;
+      if (!target) {
+        if (!(await confirmClosePromptIfAny())) break;
+        continue;
+      }
+      clickDom(target);
+      for (let wait = 0; wait < 8; wait += 1) {
+        await delay(180);
+        if (await confirmClosePromptIfAny()) break;
+        if (!visibleDialogs().filter(isBlockingFormDialog).length) return true;
+      }
+    }
+    await confirmClosePromptIfAny();
+    return visibleDialogs().filter(isBlockingFormDialog).length === 0;
+  }
+
   async function gotoWorkflowList() {
+    await dismissBlockingDialogs();
     const baseHash = location.hash.split('?')[0];
     if (baseHash !== LIST_HASH) {
       const clicked = clickMenuByTitle('流程定义') || clickMenuByTitle('流程管理');
@@ -423,28 +514,25 @@ import {
     return valueLooksSet(readInputValue(input), text);
   }
 
+  /** 只根据页面真实控件结构判断，不写死业务字段名。 */
   function detectInputKind(input, item) {
     if (!input) return 'text';
     if (input.tagName === 'TEXTAREA') return 'textarea';
-    const label = normalizeLabel(
-      ((item && item.querySelector('.el-form-item__label, label')) || {}).textContent || '',
-    );
-    const placeholder = String(input.getAttribute('placeholder') || '');
-    const dateRoot = input.closest('.el-date-editor, .el-time-picker');
-    if (dateRoot || /date|time|日期|时间/i.test(placeholder) || /日期|时间/.test(label)) {
-      if (dateRoot && dateRoot.className && /time/.test(dateRoot.className) && !/date/.test(dateRoot.className)) {
-        return 'time';
-      }
-      if (/时间/.test(label) && !/日期/.test(label)) return 'time';
-      if (/datetime|日期时间|开始时间|结束时间/i.test(`${placeholder}${label}${dateRoot && dateRoot.className || ''}`)) {
-        return 'datetime';
-      }
-      return 'date';
-    }
-    if (/接收人|申请人|审批人|人员|员工|用户|选人/.test(label)) return 'person';
     if (input.closest('.el-cascader') || (item && item.querySelector('.el-cascader'))) return 'cascader';
     if (input.closest('.el-select') || (item && item.querySelector('.el-select'))) return 'select';
-    if (input.closest('.el-autocomplete') || /请选择|选择/.test(placeholder)) return 'select';
+    if (input.closest('.el-autocomplete') || (item && item.querySelector('.el-autocomplete'))) return 'person';
+    const dateRoot = input.closest('.el-date-editor, .el-time-picker');
+    if (dateRoot) {
+      const cls = String(dateRoot.className || '');
+      if (/time/.test(cls) && !/date/.test(cls)) return 'time';
+      if (/datetime|date-editor--datetime|daterange|datetimerange/i.test(cls)) return 'datetime';
+      if (/time/.test(cls)) return 'datetime';
+      return 'date';
+    }
+    const type = String(input.getAttribute('type') || '').toLowerCase();
+    if (type === 'date') return 'date';
+    if (type === 'time') return 'time';
+    if (type === 'datetime-local') return 'datetime';
     return 'text';
   }
 
@@ -474,9 +562,52 @@ import {
         required,
         kind: detectInputKind(input, item),
         value: readInputValue(input),
+        options: [],
       });
     });
     return fields;
+  }
+
+  /** 点开下拉，把页面上正在显示的选项原文采下来，再关掉。 */
+  async function peekSelectOptions(input) {
+    const panel = await openSelectPanel(input);
+    if (!panel) return [];
+    const options = [...panel.querySelectorAll(
+      '.el-select-dropdown__item, .el-cascader-node__label, .el-autocomplete-suggestion li, .el-option, li[role="option"]',
+    )]
+      .map((el) => optionText(el))
+      .filter((text) => text && text.length <= 40);
+    const unique = [];
+    options.forEach((text) => {
+      if (!unique.includes(text)) unique.push(text);
+    });
+    try {
+      document.body.click();
+    } catch (error) {
+      // 忽略
+    }
+    await delay(100);
+    return unique.slice(0, 40);
+  }
+
+  async function enrichFieldsFromPage(fields) {
+    const list = Array.isArray(fields) ? fields : [];
+    const out = [];
+    for (let i = 0; i < list.length; i += 1) {
+      const field = list[i];
+      if (!field || (field.kind !== 'select' && field.kind !== 'cascader' && field.kind !== 'person')) {
+        out.push(field);
+        continue;
+      }
+      const input = findLabelInput([field.label]);
+      if (!input) {
+        out.push(field);
+        continue;
+      }
+      const options = await peekSelectOptions(input);
+      out.push({ ...field, options });
+    }
+    return out;
   }
 
   async function fillByLabelMap(fills) {
@@ -543,64 +674,108 @@ import {
     return { ok: true, fills, slots, message: '已用本地规则解析字段。' };
   }
 
-  async function aiFillForm(utterance, helpers) {
-    const fields = collectDialogFields();
-    if (!fields.length) {
-      return { ok: false, message: '弹窗里没有读到可填字段。', filled: {}, skipped: [] };
-    }
-
-    let fills = {};
-    let note = '';
-    const h = helpers || {};
-    const analysis = h.analysis || null;
-    const judged = FormFill.fillsFromSummary(analysis && (analysis.summary || analysis));
-    if (typeof h.aiPlanFill === 'function') {
-      try {
-        const planned = await h.aiPlanFill(utterance, fields, analysis);
-        fills = (planned && planned.fills) || {};
-        note = (planned && planned.note) || '已按模型分析回填。';
-      } catch (error) {
-        fills = { ...judged };
-        note = `模型回填失败（${error.message || '错误'}），已用对话分析兜底`;
+  /** 弹窗里的封装组件会晚于弹窗出现。等字段数量连续两次不变再交给模型。 */
+  async function waitForDialogFields() {
+    let lastCount = -1;
+    let stable = 0;
+    const start = Date.now();
+    while (Date.now() - start < 4500) {
+      const count = collectDialogFields().length;
+      if (count > 0 && count === lastCount) {
+        stable += 1;
+        if (stable >= 2) return collectDialogFields();
+      } else {
+        stable = 0;
+        lastCount = count;
       }
-    } else {
-      fills = { ...judged };
-      note = Object.keys(judged).length ? '已用对话分析回填。' : '';
+      await delay(250);
     }
-    if (!Object.keys(fills).length && Object.keys(judged).length) fills = { ...judged };
+    return collectDialogFields();
+  }
 
-    if (!Object.keys(fills).length) {
+  /**
+   * 顺序固定：等表单出现 → 把真实字段交给大模型分析 → 再按分析结果回填。
+   * 打开前的对话摘要只作参考，不能跳过「拿到表单后再分析」这一步。
+   */
+  async function aiFillForm(utterance, helpers) {
+    FillLock.beginFormFill();
+    try {
+      const rawFields = await waitForDialogFields();
+      if (!rawFields.length) {
+        return { ok: false, message: '弹窗里没有读到可填字段。', filled: {}, skipped: [] };
+      }
+      // 下拉选项也从当前页面实时采集，不使用写死的业务类型表
+      const fields = await enrichFieldsFromPage(rawFields);
+
+      const h = helpers || {};
+      const priorAnalysis = h.analysis || null;
+      const judged = FormFill.fillsFromSummary(priorAnalysis && (priorAnalysis.summary || priorAnalysis));
+      let fills = {};
+      let note = '';
+      let analyzedAfterOpen = false;
+
+      if (typeof h.aiPlanFill === 'function') {
+        try {
+          const planned = await h.aiPlanFill(utterance, fields, priorAnalysis);
+          fills = (planned && planned.fills) || {};
+          analyzedAfterOpen = true;
+          note = (planned && planned.note)
+            || `已读取 ${fields.length} 个字段并完成分析，开始回填。`;
+        } catch (error) {
+          fills = { ...judged };
+          note = `表单已打开，但分析失败（${error.message || '错误'}），改用打开前的对话摘要兜底`;
+        }
+      } else {
+        fills = { ...judged };
+        note = Object.keys(judged).length
+          ? '表单已打开，但没有填表分析接口，暂用打开前的对话摘要。'
+          : '表单已打开，但没有可用来分析的内容。';
+      }
+
+      // 打开后再分析得到的结果为空时，才退回对话摘要
+      if (!Object.keys(fills).length && Object.keys(judged).length) {
+        fills = { ...judged };
+        if (analyzedAfterOpen) note = `${note}；分析未给出字段值，已用对话摘要补充。`;
+      }
+
+      if (!Object.keys(fills).length) {
+        return {
+          ok: true,
+          slotsExtracted: true,
+          formFilled: true,
+          filled: {},
+          skipped: [],
+          fields,
+          analyzedAfterOpen,
+          message: note || '已读取表单，但模型未给出可填内容，请在弹窗中手填。',
+        };
+      }
+
+      const applied = await fillByLabelMap(fills);
       return {
-        ok: true,
+        ok: applied.ok !== false,
         slotsExtracted: true,
         formFilled: true,
-        filled: {},
-        skipped: [],
+        filled: applied.filled,
+        skipped: applied.skipped,
+        notStuck: applied.notStuck || [],
         fields,
-        message: note || '模型未给出可填内容，请在弹窗中手填。',
+        fills,
+        analyzedAfterOpen,
+        message: [note, applied.message].filter(Boolean).join('；'),
       };
+    } finally {
+      FillLock.endFormFill();
     }
-
-    const applied = await fillByLabelMap(fills);
-    return {
-      ok: applied.ok !== false,
-      slotsExtracted: true,
-      formFilled: true,
-      filled: applied.filled,
-      skipped: applied.skipped,
-      notStuck: applied.notStuck || [],
-      fields,
-      fills,
-      message: [note, applied.message].filter(Boolean).join('；'),
-    };
   }
 
   function checkRequired() {
     const fields = collectDialogFields();
     const required = fields.filter((field) => field.required);
+    // 没有必填标记时，只检查页面上已采集到、且仍为空的字段里偏关键的输入类
     const targets = required.length
       ? required
-      : fields.filter((field) => field.kind === 'date' || /事由|原因|说明|备注/.test(field.label));
+      : fields.filter((field) => field.kind === 'date' || field.kind === 'datetime' || field.kind === 'text' || field.kind === 'textarea');
     const missingTitles = [];
     targets.forEach((field) => {
       const input = findLabelInput([field.label]);

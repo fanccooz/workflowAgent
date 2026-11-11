@@ -137,26 +137,39 @@
 
   function buildFillMessages(utterance, fields, today, analysis) {
     const system = [
-      '你是表单填写助手。把对话里的分析逐步对应到页面真实字段，供逐项回填。不要提交。',
-      'analysis.summary.form 是已经做出的判断，必须据此填，不要丢掉。',
-      '只能使用字段列表里的 label。键不完全一致时由你对应。',
+      '你是表单填写助手。流程弹窗已经打开，fields 全部来自当前页面实时采集，没有预设业务字段表。',
+      '先根据 fields 对照用户原话做填写分析，再输出 fills。',
+      '只能使用 fields 里的 label。select/cascader 若带 options，只能从 options 里选原文，不要 invent 类型。',
+      'options 为空时，值也要写成页面上可能出现的原文。',
+      'priorAnalysis 只是打开前的对话参考，最终以当前 fields 为准。',
       '字段带 kind：text/textarea/select/cascader/date/time/datetime/person。你只给值，不要描述怎么点。',
-      'select/cascader/person 的值写成页面上会出现的选项原文或人名。',
-      '没有判断依据的字段不要填。',
+      '与用户意图无关的字段不要填。不要提交。',
       '日期写成 YYYY-MM-DD；日期时间写成 YYYY-MM-DD HH:mm:ss；时间写成 HH:mm。今天是 ' + String(today || '') + '。',
-      '「请假两天、明天开始」换算成起止日期。',
+      '相对日期按今天换算。',
       '只输出 JSON：',
       '{"fills":{"字段label":"值"},"note":"对应说明"}',
     ].join('');
 
-    const compact = (Array.isArray(fields) ? fields : []).map((item) => ({
-      label: item.label,
-      kind: item.kind || 'text',
-      required: Boolean(item.required),
-      value: item.value || '',
-    }));
-    const payload = { utterance, fields: compact, today };
-    if (analysis && typeof analysis === 'object') payload.analysis = analysis;
+    const compact = (Array.isArray(fields) ? fields : []).map((item) => {
+      const row = {
+        label: item.label,
+        kind: item.kind || 'text',
+        required: Boolean(item.required),
+        value: item.value || '',
+      };
+      if (Array.isArray(item.options) && item.options.length) {
+        row.options = item.options.slice(0, 40);
+      }
+      return row;
+    });
+    const payload = {
+      stage: 'form_opened',
+      instruction: '表单与下拉选项均来自当前页面。请先分析 fields，再给出 fills。',
+      utterance,
+      fields: compact,
+      today,
+    };
+    if (analysis && typeof analysis === 'object') payload.priorAnalysis = analysis;
 
     return [
       { role: 'system', content: system },
