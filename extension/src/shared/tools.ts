@@ -3,18 +3,20 @@ import * as LeaveSkill from './leave';
 import * as FormFill from './formfill';
 import * as AgentApi from './agent';
 import * as FillLock from './fill-lock';
+import { dismissBlockingDialogs } from './dialog-dismiss';
 import { LIST_HASH } from './types';
 import {
   delay,
   waitFor,
   visibleDialogs,
   isWorkflowLaunchDialog,
-  isBlockingFormDialog,
   tableLoadFailed,
   findVueInstance,
   setNativeValue,
   readInputValue,
   valueLooksSet,
+  clickWorkflowListRefresh,
+  normalizeFieldLabel,
 } from './dom';
 
   function hasAgRows() {
@@ -64,105 +66,6 @@ import {
     return true;
   }
 
-  function clickRefreshList() {
-    const buttons = [...document.querySelectorAll('button, a, span, div')];
-    const target = buttons.find((el) => {
-      const text = (el.innerText || '').replace(/\s+/g, '');
-      return text === '刷新列表' || text === '刷新';
-    });
-    if (!target) return false;
-    target.click();
-    return true;
-  }
-
-  function btnText(el) {
-    return String((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, '');
-  }
-
-  function clickDom(el) {
-    if (!el) return false;
-    try {
-      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-      if (typeof el.click === 'function') el.click();
-      return true;
-    } catch (error) {
-      return false;
-    }
-  }
-
-  function listConfirmClosePrompts() {
-    const boxes = [...document.querySelectorAll(
-      '.el-message-box__wrapper, .el-overlay-message-box, .el-message-box, .el-overlay.is-message-box',
-    )].filter((item) => {
-      const style = getComputedStyle(item);
-      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
-    });
-    const confirmDialogs = visibleDialogs().filter((dialog) => {
-      if (isWorkflowLaunchDialog(dialog)) return false;
-      const text = String(dialog.innerText || '').replace(/\s+/g, '');
-      if (/基础信息/.test(text) && /提交/.test(text)) return false;
-      const looksConfirm = /是否关闭|确认关闭|未保存|是否放弃|放弃编辑|离开当前|是否离开|关闭当前|数据尚未|内容尚未/.test(text);
-      const buttons = [...dialog.querySelectorAll('button, .el-button')];
-      const hasOk = buttons.some((b) => /^(确定|确认|是|关闭|不保存|放弃)$/.test(btnText(b)));
-      const hasCancel = buttons.some((b) => /^(取消|否)$/.test(btnText(b)));
-      return looksConfirm || (hasOk && hasCancel && buttons.length <= 4 && !/提交/.test(text));
-    });
-    return [...boxes, ...confirmDialogs];
-  }
-
-  async function confirmClosePromptIfAny() {
-    const prompts = listConfirmClosePrompts();
-    if (!prompts.length) return false;
-    const prompt = prompts[prompts.length - 1];
-    const root = (prompt.classList && prompt.classList.contains('el-message-box'))
-      ? prompt
-      : (prompt.querySelector && prompt.querySelector('.el-message-box')) || prompt;
-    const boxButtons = [...root.querySelectorAll('button, .el-button')].filter((item) => !/提交/.test(btnText(item)));
-    const discard = boxButtons.find((item) => /不保存|放弃|不提交|离开|丢弃/.test(btnText(item)));
-    const confirmClose = boxButtons.find((item) => /^(确定|确认|是|关闭|OK|Yes)$/i.test(btnText(item)));
-    const primary = boxButtons.find((item) => item.classList && item.classList.contains('el-button--primary')
-      && !/取消|否|提交/.test(btnText(item)));
-    const pick = discard || confirmClose || primary;
-    if (!pick) return false;
-    clickDom(pick);
-    await delay(300);
-    return true;
-  }
-
-  /** 进流程列表前清掉挡路弹窗：关表单 → 确认关闭。不点提交。回填进行中不关。 */
-  async function dismissBlockingDialogs() {
-    if (FillLock.isFormFillActive()) return false;
-    for (let round = 0; round < 5; round += 1) {
-      await confirmClosePromptIfAny();
-      const dialogs = visibleDialogs().filter(isBlockingFormDialog);
-      if (!dialogs.length) return true;
-      const dialog = dialogs[dialogs.length - 1];
-      const footer = dialog.querySelector('.el-dialog__footer, .dialog-footer, .el-drawer__footer');
-      const scope = footer || dialog;
-      const buttons = [...scope.querySelectorAll('button, .el-button, a')];
-      const cancel = buttons.find((button) => {
-        const text = btnText(button);
-        return /^(取消|关闭)$/.test(text) || (/取消|关闭/.test(text) && !/提交/.test(text));
-      });
-      const closeButton = dialog.querySelector('.el-dialog__headerbtn, .el-dialog__close');
-      const target = cancel || closeButton;
-      if (!target) {
-        if (!(await confirmClosePromptIfAny())) break;
-        continue;
-      }
-      clickDom(target);
-      for (let wait = 0; wait < 8; wait += 1) {
-        await delay(180);
-        if (await confirmClosePromptIfAny()) break;
-        if (!visibleDialogs().filter(isBlockingFormDialog).length) return true;
-      }
-    }
-    await confirmClosePromptIfAny();
-    return visibleDialogs().filter(isBlockingFormDialog).length === 0;
-  }
-
   async function gotoWorkflowList() {
     await dismissBlockingDialogs();
     const baseHash = location.hash.split('?')[0];
@@ -187,7 +90,7 @@ import {
         return { ok: true, message: attempt ? '已刷新并进入流程定义列表。' : '已在流程定义列表。' };
       }
       if (tableLoadFailed() || !hasAgRows()) {
-        const refreshed = clickRefreshList();
+        const refreshed = clickWorkflowListRefresh();
         if (!refreshed && attempt >= 1) {
           return { ok: false, message: '流程列表加载异常，且页面上找不到「刷新列表」按钮。' };
         }
@@ -197,9 +100,6 @@ import {
     return { ok: false, message: '流程定义列表仍显示加载异常。请手动点「刷新列表」或刷新网页后再试。' };
   }
 
-  function normalizeLabel(text) {
-    return String(text || '').replace(/\s+/g, '').replace(/[:：*＊]/g, '');
-  }
 
   function findLabelInput(labels) {
     const list = Array.isArray(labels) ? labels : [];
@@ -207,11 +107,11 @@ import {
     // 优先：表单项 label 精确/包含匹配，避免整行 includes 点到错误 input
     const items = [...dialog.querySelectorAll('.el-form-item')];
     for (const labelText of list) {
-      const want = normalizeLabel(labelText);
+      const want = normalizeFieldLabel(labelText);
       if (!want) continue;
       for (const item of items) {
         const labelEl = item.querySelector('.el-form-item__label, label');
-        const label = normalizeLabel(labelEl ? labelEl.textContent : '');
+        const label = normalizeFieldLabel(labelEl ? labelEl.textContent : '');
         if (!label || (label !== want && !label.includes(want) && !want.includes(label))) continue;
         const input = item.querySelector('.el-form-item__content input:not([type="hidden"]), .el-form-item__content textarea, input:not([type="hidden"]), textarea');
         if (input) return input;
@@ -545,7 +445,7 @@ import {
     items.forEach((item, index) => {
       const labelEl = item.querySelector('.el-form-item__label, label');
       const rawLabel = labelEl ? labelEl.textContent : '';
-      const label = normalizeLabel(rawLabel);
+      const label = normalizeFieldLabel(rawLabel);
       if (!label || label.length > 40) return;
       if (seen.has(label)) return;
       const input = item.querySelector(
@@ -652,26 +552,6 @@ import {
       notStuck,
       message: parts.length ? parts.join('；') : '没有可填的槽位。',
     };
-  }
-
-  /** 规则兜底：仍可用 leave skill 抽槽，再按已知别名填 */
-  function fillLeaveFormFallback(utterance) {
-    const Leave = LeaveSkill;
-    if (!Leave) return { ok: false, fills: {}, message: '请假 skill 未加载。' };
-    const slots = Leave.extractSlots(utterance, new Date());
-    const fills = {};
-    Object.keys(Leave.FIELD_LABELS).forEach((key) => {
-      if (!slots[key]) return;
-      const labels = Leave.labelsFor(key);
-      const fields = collectDialogFields();
-      const hit = fields.find((field) => labels.some((label) => {
-        const a = normalizeLabel(field.label);
-        const b = normalizeLabel(label);
-        return a === b || a.includes(b) || b.includes(a);
-      }));
-      if (hit) fills[hit.label] = slots[key];
-    });
-    return { ok: true, fills, slots, message: '已用本地规则解析字段。' };
   }
 
   /** 弹窗里的封装组件会晚于弹窗出现。等字段数量连续两次不变再交给模型。 */
@@ -806,8 +686,8 @@ import {
       const labels = Leave.labelsFor(key);
       const fields = collectDialogFields();
       const hit = fields.find((field) => labels.some((label) => {
-        const a = normalizeLabel(field.label);
-        const b = normalizeLabel(label);
+        const a = normalizeFieldLabel(field.label);
+        const b = normalizeFieldLabel(label);
         return a === b || a.includes(b) || b.includes(a);
       }));
       if (hit) fills[hit.label] = slots[key];
@@ -1006,15 +886,7 @@ import {
   }
 
 export {
-  observePage,
-  gotoWorkflowList,
-  collectDialogFields,
-  fillByLabelMap,
-  fillLeaveForm,
-  aiFillForm,
   checkRequired,
-  extractLeaveSlots,
   submitWorkflow,
-  runTool,
   runAgentLoop,
 };

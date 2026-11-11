@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue';
+import { nextTick, ref } from 'vue';
 
-const props = defineProps<{
+defineProps<{
   modelValue: string;
   running?: boolean;
   habitLoading?: boolean;
@@ -15,13 +15,6 @@ const emit = defineEmits<{
 }>();
 
 const inputRef = ref<HTMLTextAreaElement | null>(null);
-
-watch(
-  () => props.modelValue,
-  () => {
-    // keep focus helpers available via expose
-  },
-);
 
 function clearInput() {
   emit('update:modelValue', '');

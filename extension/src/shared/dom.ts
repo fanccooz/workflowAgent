@@ -72,6 +72,45 @@ export function isVisibleEl(el) {
   return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
 }
 
+/** 遮罩/弹层可见性（不看 disabled / offsetParent） */
+export function isVisibleOverlay(el) {
+  if (!el) return false;
+  const style = getComputedStyle(el);
+  return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+}
+
+export function controlText(el) {
+  return String((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, '');
+}
+
+export function normalizeFieldLabel(text) {
+  return String(text || '').replace(/\s+/g, '').replace(/[:：*＊]/g, '');
+}
+
+export function clickDom(el) {
+  if (!el) return false;
+  try {
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    if (typeof el.click === 'function') el.click();
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+export function clickWorkflowListRefresh() {
+  const buttons = [...document.querySelectorAll('button, a, span, div')];
+  const target = buttons.find((el) => {
+    const text = controlText(el);
+    return text === '刷新列表' || text === '刷新';
+  });
+  if (!target) return false;
+  clickDom(target);
+  return true;
+}
+
 export function findVueInstance(el) {
   let node = el;
   for (let i = 0; i < 12 && node; i += 1) {

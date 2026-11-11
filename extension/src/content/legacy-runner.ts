@@ -1,4 +1,8 @@
 // @ts-nocheck
+/**
+ * Content 编排入口：打开流程/菜单/待办、列表筛选、填表执行、聊天拆步、消息桥接。
+ * 关窗逻辑见 shared/dialog-dismiss；Agent 工具见 shared/tools。
+ */
 import * as Match from '@/shared/match';
 import * as Intent from '@/shared/intent';
 import * as Leave from '@/shared/leave';
@@ -8,13 +12,13 @@ import * as Tools from '@/shared/tools';
 import * as Habits from '@/shared/habits';
 import * as TaskPlan from '@/shared/taskplan';
 import * as FillLock from '@/shared/fill-lock';
+import * as DialogDismiss from '@/shared/dialog-dismiss';
 import { MSG, LIST_HASH } from '@/shared/types';
 import {
   delay,
   waitFor,
   visibleDialogs,
   isWorkflowLaunchDialog,
-  isBlockingFormDialog,
   tableLoadFailed,
   isInSidebar,
   isVisibleEl,
@@ -22,6 +26,9 @@ import {
   setNativeValue,
   readInputValue,
   valueLooksSet,
+  controlText,
+  clickWorkflowListRefresh,
+  normalizeFieldLabel,
 } from '@/shared/dom';
 
   function headerFields() {
@@ -81,17 +88,6 @@ import {
     location.hash = Match.openHash(code);
   }
 
-  function clickRefreshListButton() {
-    const buttons = [...document.querySelectorAll('button, a, span, div')];
-    const target = buttons.find((el) => {
-      const text = (el.innerText || '').replace(/\s+/g, '');
-      return text === '刷新列表' || text === '刷新';
-    });
-    if (!target) return false;
-    target.click();
-    return true;
-  }
-
   async function loadRowsFromTable() {
     const baseHash = location.hash.split('?')[0];
     if (baseHash !== LIST_HASH) {
@@ -107,7 +103,7 @@ import {
       if (rows.length) return rows;
 
       if (tableLoadFailed() || !rows.length) {
-        const ok = clickRefreshListButton();
+        const ok = clickWorkflowListRefresh();
         if (!ok && attempt >= 1) {
           throw new Error('流程定义列表加载异常，且找不到「刷新列表」。请刷新网页后再试。');
         }
@@ -130,183 +126,13 @@ import {
       .find((text) => text.includes('未找到可发起的流程定义') || text.includes('打开流程失败')) || '';
   }
 
-  function controlText(el) {
-    return String((el && el.innerText) || '').replace(/\s/g, '');
-  }
-
-  let closeUsedThisTurn = false;
-
-  function resetCloseOnce() {
-    closeUsedThisTurn = false;
-  }
-
-  function listBlockingDialogs() {
-    return visibleDialogs().filter(isBlockingFormDialog);
-  }
-
-  function dialogLooksLikeTarget(dialog, name) {
-    const text = String((dialog && dialog.innerText) || '').replace(/\s+/g, '');
-    const want = String(name || '').replace(/\s+/g, '');
-    if (!text || !want) return false;
-    const core = want.replace(/(流程|申请)$/g, '');
-    return text.includes(want) || (core.length >= 2 && text.includes(core));
-  }
-
-  function isVisibleOverlay(el) {
-    if (!el) return false;
-    const style = getComputedStyle(el);
-    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
-  }
-
-  function clickDom(el) {
-    if (!el) return false;
-    try {
-      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-      if (typeof el.click === 'function') el.click();
-      return true;
-    } catch (error) {
-      return false;
-    }
-  }
-
-  /** 平台「确认关闭 / 是否放弃」一类二次确认（message-box 或小对话框）。绝不点提交。 */
-  function listConfirmClosePrompts() {
-    const boxes = [...document.querySelectorAll(
-      '.el-message-box__wrapper, .el-overlay-message-box, .el-message-box, .el-overlay.is-message-box',
-    )].filter((item) => {
-      const box = item.classList && item.classList.contains('el-message-box')
-        ? item
-        : (item.querySelector && item.querySelector('.el-message-box')) || item;
-      return isVisibleOverlay(item) && isVisibleOverlay(box);
-    });
-
-    const confirmDialogs = visibleDialogs().filter((dialog) => {
-      if (isWorkflowLaunchDialog(dialog)) return false;
-      if (dialog.closest('#warom-agent-host, #wf-agent-host, .wf-root, .wf-panel')) return false;
-      const text = String(dialog.innerText || '').replace(/\s+/g, '');
-      if (/基础信息/.test(text) && /提交/.test(text)) return false;
-      const looksConfirm = /是否关闭|确认关闭|未保存|是否放弃|放弃编辑|离开当前|是否离开|关闭当前|数据尚未|内容尚未|是否继续/.test(text);
-      const buttons = [...dialog.querySelectorAll('button, .el-button')];
-      const hasOk = buttons.some((b) => /^(确定|确认|是|关闭|不保存|放弃)$/.test(controlText(b)));
-      const hasCancel = buttons.some((b) => /^(取消|否)$/.test(controlText(b)));
-      return looksConfirm || (hasOk && hasCancel && buttons.length <= 4 && !/提交/.test(text));
-    });
-
-    return [...boxes, ...confirmDialogs];
-  }
-
-  /** 点掉确认关闭弹窗：优先「不保存/放弃」，否则点「确定/确认」。 */
-  async function confirmClosePromptIfAny() {
-    const prompts = listConfirmClosePrompts();
-    if (!prompts.length) return false;
-    const prompt = prompts[prompts.length - 1];
-    const root = (prompt.classList && prompt.classList.contains('el-message-box'))
-      ? prompt
-      : (prompt.querySelector && prompt.querySelector('.el-message-box')) || prompt;
-    const boxButtons = [...root.querySelectorAll('button, .el-button')].filter((item) => {
-      const text = controlText(item);
-      return text && !/提交/.test(text);
-    });
-    const discard = boxButtons.find((item) => /不保存|放弃|不提交|离开|丢弃/.test(controlText(item)));
-    const confirmClose = boxButtons.find((item) => {
-      const text = controlText(item);
-      return /^(确定|确认|是|关闭|OK|Yes)$/i.test(text);
-    });
-    const primary = boxButtons.find((item) => item.classList && item.classList.contains('el-button--primary')
-      && !/取消|否|提交/.test(controlText(item)));
-    const pick = discard || confirmClose || primary;
-    if (!pick) return false;
-    clickDom(pick);
-    await delay(320);
-    return true;
-  }
-
-  /**
-   * 关掉挡路表单弹窗。
-   * 流程：点取消/关闭 → 等确认关闭弹窗 → 点确定 → 再进其他页。
-   * - leaveCurrentForm：明确要离开当前表（进菜单/待办/首页）时才允许在回填中关窗
-   * - keepMatch：保留已是目标流程的弹窗，避免「为了打开又先把自己关掉」
-   * 绝不点「提交」。
-   */
-  async function closeWorkflowDialogs(options) {
-    const opts = options || {};
-    const force = Boolean(opts.force);
-    const leaveCurrentForm = Boolean(opts.leaveCurrentForm);
-    const keepMatch = opts.keepMatch ? String(opts.keepMatch) : '';
-    if (FillLock.isFormFillActive() && !leaveCurrentForm) {
-      return false;
-    }
-    if (!force && closeUsedThisTurn) return false;
-    closeUsedThisTurn = true;
-
-    const remaining = () => listBlockingDialogs().filter((dialog) => {
-      if (keepMatch && dialogLooksLikeTarget(dialog, keepMatch)) return false;
-      return true;
-    });
-
-    for (let round = 0; round < 5; round += 1) {
-      // 上一轮可能已经弹出确认框，先点确认
-      await confirmClosePromptIfAny();
-      if (!remaining().length) return true;
-
-      const dialogs = remaining();
-      const dialog = dialogs[dialogs.length - 1];
-      const footer = dialog.querySelector('.el-dialog__footer, .dialog-footer, .el-drawer__footer');
-      const scope = footer || dialog;
-      const buttons = [...scope.querySelectorAll('button, .el-button, a')];
-      const cancel = buttons.find((button) => {
-        const text = controlText(button);
-        return /^(取消|关闭)$/.test(text);
-      }) || buttons.find((button) => {
-        const text = controlText(button);
-        return /取消|关闭/.test(text) && !/提交|确定提交|确认提交/.test(text);
-      });
-      const closeButton = dialog.querySelector('.el-dialog__headerbtn, .el-dialog__close, button.el-dialog__headerbtn');
-      const button = cancel || closeButton;
-      if (!button) {
-        // 没有取消按钮时，再试一次确认框（可能已经在问是否关闭）
-        if (!(await confirmClosePromptIfAny())) break;
-        continue;
-      }
-      clickDom(button);
-
-      // 等确认关闭弹窗出来再点确定
-      let confirmed = false;
-      for (let wait = 0; wait < 8; wait += 1) {
-        await delay(180);
-        if (await confirmClosePromptIfAny()) {
-          confirmed = true;
-          break;
-        }
-        if (!remaining().length) return true;
-      }
-      if (!confirmed) await delay(200);
-    }
-
-    // 最后再清一次残留确认框
-    await confirmClosePromptIfAny();
-    await delay(200);
-    return remaining().length === 0;
-  }
-
-  /** 明确离开当前表单（进菜单/待办/首页等）时才关窗：关表单 → 确认关闭 → 再导航。 */
-  async function ensureDialogsClosedForNavigation() {
-    if (!listBlockingDialogs().length && !listConfirmClosePrompts().length) return true;
-    let closed = await closeWorkflowDialogs({ force: true, leaveCurrentForm: true });
-    if (!closed) {
-      await delay(350);
-      closeUsedThisTurn = false;
-      closed = await closeWorkflowDialogs({ force: true, leaveCurrentForm: true });
-    }
-    if (!closed) {
-      await delay(350);
-      closeUsedThisTurn = false;
-      closed = await closeWorkflowDialogs({ force: true, leaveCurrentForm: true });
-    }
-    return closed;
-  }
+  const {
+    resetCloseOnce,
+    listBlockingDialogs,
+    listConfirmClosePrompts,
+    closeWorkflowDialogs,
+    ensureDialogsClosedForNavigation,
+  } = DialogDismiss;
 
   function currentCode() {
     const query = location.hash.split('?')[1] || '';
@@ -715,15 +541,6 @@ import {
     return Intent.sanitizeDecision(parsed, candidates, scope);
   }
 
-  function matchMenusLocally(utterance) {
-    const menus = collectMenus();
-    const result = Match.matchMenus(utterance, menus);
-    if (result.status === 'open' || result.status === 'choose') {
-      return result.matches || [];
-    }
-    return [];
-  }
-
   async function openHomePage() {
     const closed = await ensureDialogsClosedForNavigation();
     if (!closed && (listBlockingDialogs().length || listConfirmClosePrompts().length)) {
@@ -983,10 +800,6 @@ import {
     }
   }
 
-  function normalizeFilterLabel(text) {
-    return String(text || '').replace(/\s+/g, '').replace(/[:：*＊]/g, '');
-  }
-
   async function writeFilterInput(input, key) {
     const text = String(key || '');
     try {
@@ -1056,7 +869,7 @@ import {
     const labelEl = item
       ? item.querySelector('.el-form-item__label, label, .ag-header-cell-text')
       : null;
-    const label = normalizeFilterLabel(labelEl ? labelEl.textContent : '');
+    const label = normalizeFieldLabel(labelEl ? labelEl.textContent : '');
     const tip = `${el.placeholder || ''}${el.getAttribute('aria-label') || ''}${el.title || ''}`;
     return { item, label, tip: tip.replace(/\s+/g, ''), text: `${label}${tip.replace(/\s+/g, '')}` };
   }
@@ -1880,9 +1693,7 @@ import {
 
     const settings = await loadAiSettings();
     const aiReady = Boolean(settings && settings.enabled && settings.hasKey);
-    const habitSettings = true
-      ? await Habits.loadHabitSettings()
-      : null;
+    const habitSettings = await Habits.loadHabitSettings();
     const serverPlanReady = Boolean(habitSettings && habitSettings.habitEnabled && habitSettings.habitBackendUrl);
 
     // Nest 规划 或 扩展 DeepSeek：拆步 →（入库）→ 逐步执行 → 失败再 Act
@@ -1940,13 +1751,6 @@ import {
     }
 
     if (!aiReady) {
-      if (scope === 'menu') {
-        return {
-          status: 'none',
-          message: '没有匹配到菜单。可说短名称如「考勤」「请假」，不必知道在哪个目录。',
-          choices: [],
-        };
-      }
       const fallback = await openWorkflowByUtterance(utterance);
       return { ...fallback, choices: fallback.matches || [] };
     }

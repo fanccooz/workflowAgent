@@ -144,6 +144,16 @@ async function clearHabitSuggestions() {
   }
 }
 
+function habitFailReason(result: Record<string, unknown> | null | undefined) {
+  return String(
+    result?.message
+      || result?.error
+      || (result?.reason === 'no-user'
+        ? '未识别工号，请到设置填写'
+        : '暂无建议语（需后端 DeepSeek Key，且至少 3 条聊天）'),
+  );
+}
+
 async function maybeFillHabitSuggestion(options: {
   force?: boolean;
   refresh?: boolean;
@@ -156,21 +166,15 @@ async function maybeFillHabitSuggestion(options: {
       : (result?.suggestion ? [{ id: 0, content: result.suggestion }] : []);
     if (incoming.length) {
       setHabitSuggestions(incoming);
-      habitError.value = formatHabitError(result?.error || result?.message || '');
+      habitError.value = formatHabitError(String(result?.error || result?.message || ''));
       if (options.announce) {
         log.value = `${log.value}\n\n（已更新顶部快捷建议${result.cached ? '·缓存' : ''}，点击可填入）`;
       }
       return;
     }
-    habitError.value = formatHabitError(result?.message || result?.error || '暂无建议语');
+    habitError.value = formatHabitError(habitFailReason(result));
     if (options.announce) {
-      const reason =
-        result?.message ||
-        result?.error ||
-        (result?.reason === 'no-user'
-          ? '未识别工号，请到设置填写'
-          : '暂无建议语（需后端 DeepSeek Key，且至少 3 条聊天）');
-      log.value = `${log.value}\n\n（习惯建议未更新：${reason}）`;
+      log.value = `${log.value}\n\n（习惯建议未更新：${habitFailReason(result)}）`;
     }
   } catch (error) {
     if (options.announce) {
@@ -229,6 +233,16 @@ function scrollLog() {
   });
 }
 
+function showTranscript(next: string) {
+  transcript.value = next;
+  log.value = next;
+  scrollLog();
+}
+
+function appendAssistant(message: string) {
+  showTranscript(`${transcript.value}\n助手：${message}`);
+}
+
 async function send() {
   const utterance = input.value.trim();
   if (!utterance) {
@@ -238,9 +252,7 @@ async function send() {
   running.value = true;
   choices.value = [];
   clearConfirm();
-  transcript.value = `${transcript.value}\n\n我：${utterance}\n助手：正在思考…`;
-  log.value = transcript.value;
-  scrollLog();
+  showTranscript(`${transcript.value}\n\n我：${utterance}\n助手：正在思考…`);
   Habits.reportChat(utterance, 'user').catch(() => {});
   try {
     const response = await handleUtterance(utterance, { history: historyForApi() });
@@ -254,9 +266,9 @@ async function send() {
     if (assistantMemory) {
       Habits.reportChat(assistantMemory, 'assistant').catch(() => {});
     }
-    transcript.value = `${transcript.value.replace(/\n助手：正在思考…$/, '')}\n${response?.message || replyText}`;
-    log.value = transcript.value;
-    scrollLog();
+    showTranscript(
+      `${transcript.value.replace(/\n助手：正在思考…$/, '')}\n${response?.message || replyText}`,
+    );
     input.value = '';
     if (response?.status === 'choose') {
       choices.value = Array.isArray(response.choices) ? response.choices : [];
@@ -268,8 +280,7 @@ async function send() {
     maybeFillHabitSuggestion({ announce: false });
   } catch (error) {
     const message = error instanceof Error ? error.message : '执行失败。';
-    transcript.value = `${transcript.value.replace(/\n助手：正在思考…$/, '')}\n助手：${message}`;
-    log.value = transcript.value;
+    showTranscript(`${transcript.value.replace(/\n助手：正在思考…$/, '')}\n助手：${message}`);
     clearConfirm();
   } finally {
     running.value = false;
@@ -280,10 +291,8 @@ async function pickChoice(item: ChoiceItem) {
   running.value = true;
   try {
     const opened = await openCandidate(item);
-    transcript.value = `${transcript.value}\n助手：${opened?.message || '已打开。'}`;
-    log.value = transcript.value;
+    appendAssistant(opened?.message || '已打开。');
     choices.value = [];
-    scrollLog();
   } catch (error) {
     log.value = error instanceof Error ? error.message : '打开失败。';
   } finally {
@@ -295,9 +304,7 @@ async function onConfirm() {
   running.value = true;
   try {
     const response = await confirmLeaveSubmit();
-    transcript.value = `${transcript.value}\n助手：${response?.message || '已提交。'}`;
-    log.value = transcript.value;
-    scrollLog();
+    appendAssistant(response?.message || '已提交。');
     if (response?.status === 'await_confirm') {
       applyConfirmUi({
         status: 'await_confirm',

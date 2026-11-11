@@ -69,7 +69,6 @@ export function useChatSession(defaults: { log: string; transcript: string }) {
   return {
     log,
     transcript,
-    chatHistory,
     loadPersistedChat,
     persistChat,
     pushTurn,
