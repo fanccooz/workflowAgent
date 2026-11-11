@@ -417,9 +417,40 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
     return [{ type: 'approve_todo', query: text }];
   }
 
+  function readChatMode(raw) {
+    const mode = String((raw && raw.mode) || '').trim().toLowerCase();
+    if (mode === 'chat' || mode === 'talk') return 'chat';
+    if (mode === 'task' || mode === 'execute') return 'task';
+    return '';
+  }
+
+  /** 模型明确说这是聊天时，不再按关键字改成打开、填写或点击。 */
+  function asChatOnly(reply, summary, utterance) {
+    let text = String(reply || '').trim();
+    if (isFormSubmitLabel(utterance)) {
+      text = '流程提交需要你在表单里手动点击「提交」，我不会代为提交。';
+    } else if (/已(帮你)?(点开|打开|点击|提交|写入|筛选|最小化)/.test(text)) {
+      text = '这是在聊天，我没有操作页面。需要办理时直接说要做的事。';
+    }
+    return {
+      mode: 'chat',
+      reply: text || '好的。',
+      action: { type: 'none', query: '' },
+      actions: [{ type: 'none', query: '' }],
+      summary,
+    };
+  }
+
   /** 校验动作类型；summary 由模型自设；打开/搜索冲突时按关键词纠正 */
   function sanitizeChatAction(raw, utterance) {
     const data = raw && typeof raw === 'object' ? raw : {};
+    const summary = data.summary && typeof data.summary === 'object' && !Array.isArray(data.summary)
+      ? data.summary
+      : null;
+    let reply = String(data.reply || data.message || '').trim();
+    if (readChatMode(data) === 'chat') {
+      return asChatOnly(reply, summary, utterance || '');
+    }
     let actions = [];
     if (Array.isArray(data.actions) && data.actions.length) {
       actions = data.actions.map(cleanOneAction);
@@ -428,10 +459,6 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
     } else {
       actions = [{ type: 'none', query: '' }];
     }
-    const summary = data.summary && typeof data.summary === 'object' && !Array.isArray(data.summary)
-      ? data.summary
-      : null;
-    let reply = String(data.reply || data.message || '').trim();
 
     actions = enforceOpenVsSearch(utterance || '', actions);
     actions = enforceClickIntent(utterance || '', actions);
@@ -459,6 +486,7 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
       reply = '我还没有真正操作页面。请直接说要点的按钮，例如「帮我点查看草稿」或「帮我点提交」。';
     }
     return {
+      mode: actionable.length ? 'task' : 'chat',
       reply: reply || '好的。',
       action: first,
       actions,

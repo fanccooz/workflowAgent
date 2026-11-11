@@ -28,6 +28,7 @@ import {
     const onWorkflowList = hash.split('?')[0] === LIST_HASH;
     const dialogs = visibleDialogs();
     const launch = dialogs.find(isWorkflowLaunchDialog) || null;
+    const fields = launch ? collectDialogFields() : [];
     return {
       ok: true,
       observation: {
@@ -39,6 +40,13 @@ import {
         launchDialogText: launch
           ? String(launch.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 240)
           : '',
+        fieldCount: fields.length,
+        fields: fields.map((field) => ({
+          label: field.label,
+          kind: field.kind,
+          required: Boolean(field.required),
+          value: field.value || '',
+        })),
         hash,
       },
     };
@@ -138,36 +146,96 @@ import {
     ];
   }
 
-  async function pickDateFromPanel(input, ymd) {
-    const m = String(ymd || '').match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-    if (!m) return false;
-    const year = Number(m[1]);
-    const month = Number(m[2]);
-    const day = Number(m[3]);
+  function visiblePoppers(selectors) {
+    return [...document.querySelectorAll(selectors)]
+      .filter((panel) => {
+        const style = getComputedStyle(panel);
+        return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+      });
+  }
+
+  function clickConfirmIn(panel) {
+    if (!panel) return false;
+    const ok = [...panel.querySelectorAll('button')].find((btn) => /确定|OK|此刻/i.test(btn.innerText || ''));
+    if (!ok) return false;
+    ok.click();
+    return true;
+  }
+
+  function parseTimeParts(text) {
+    const raw = String(text || '').trim();
+    const hit = raw.match(/(?:(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)/);
+    if (!hit) return null;
+    return {
+      hour: Number(hit[1]),
+      minute: Number(hit[2]),
+      second: hit[3] == null ? null : Number(hit[3]),
+    };
+  }
+
+  async function pickSpinnerColumn(panel, columnIndex, want) {
+    if (want == null || !Number.isFinite(want)) return false;
+    const columns = [...panel.querySelectorAll('.el-time-spinner__wrapper, .el-scrollbar')];
+    const column = columns[columnIndex];
+    if (!column) return false;
+    const items = [...column.querySelectorAll('.el-time-spinner__item, li')];
+    const target = items.find((item) => {
+      const n = Number(String(item.textContent || '').trim());
+      return n === want;
+    });
+    if (!target) return false;
+    target.click();
+    await delay(80);
+    return true;
+  }
+
+  async function pickTimeFromPanel(input, text) {
+    const parts = parseTimeParts(text);
+    if (!parts) return false;
     try {
       input.click();
     } catch (error) {
       return false;
     }
     await delay(250);
-    const panels = [...document.querySelectorAll('.el-picker-panel, .el-date-picker, .el-picker__popper')]
-      .filter((panel) => {
-        const style = getComputedStyle(panel);
-        return style.display !== 'none' && style.visibility !== 'hidden';
-      });
+    const panels = visiblePoppers('.el-time-panel, .el-picker-panel, .el-time-picker__panel, .el-picker__popper');
+    const panel = panels[panels.length - 1];
+    if (!panel || !panel.querySelector('.el-time-spinner, .el-time-panel')) return false;
+    await pickSpinnerColumn(panel, 0, parts.hour);
+    await pickSpinnerColumn(panel, 1, parts.minute);
+    if (parts.second != null) await pickSpinnerColumn(panel, 2, parts.second);
+    clickConfirmIn(panel);
+    await delay(120);
+    return valueLooksSet(readInputValue(input), text);
+  }
+
+  async function pickDateFromPanel(input, ymd) {
+    const m = String(ymd || '').match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    if (!m) return false;
+    const year = Number(m[1]);
+    const month = Number(m[2]);
+    const day = Number(m[3]);
+    const timeParts = parseTimeParts(ymd);
+    try {
+      input.click();
+    } catch (error) {
+      return false;
+    }
+    await delay(250);
+    const panels = visiblePoppers('.el-picker-panel, .el-date-picker, .el-picker__popper, .el-date-range-picker');
     const panel = panels[panels.length - 1];
     if (!panel) return false;
 
-    // 尽量切到目标年月（Element 常见年月按钮）
     for (let guard = 0; guard < 24; guard += 1) {
       const label = (panel.querySelector('.el-date-picker__header-label, .el-date-range-picker__header') || panel)
         .innerText || '';
       const hasYear = label.includes(String(year));
       const hasMonth = label.includes(`${month}月`) || label.includes(`-${String(month).padStart(2, '0')}`);
       if (hasYear && (hasMonth || !/月/.test(label))) break;
-      const next = panel.querySelector('[aria-label="下个月"], .el-icon-arrow-right, .arrow-right');
-      const prev = panel.querySelector('[aria-label="上个月"], .el-icon-arrow-left, .arrow-left');
-      const btn = label && Number((label.match(/(\d{4})/) || [])[1]) > year ? prev : next;
+      const next = panel.querySelector('[aria-label="下个月"], .el-icon-arrow-right, .arrow-right, .el-picker-panel__icon-btn.el-icon-arrow-right');
+      const prev = panel.querySelector('[aria-label="上个月"], .el-icon-arrow-left, .arrow-left, .el-picker-panel__icon-btn.el-icon-arrow-left');
+      const currentYear = Number((label.match(/(\d{4})/) || [])[1]);
+      const btn = currentYear > year ? prev : next;
       if (!btn) break;
       btn.click();
       await delay(120);
@@ -182,70 +250,201 @@ import {
     if (!target) return false;
     target.click();
     await delay(150);
-    // 有的面板还要点「确定」
-    const ok = [...panel.querySelectorAll('button')].find((btn) => /确定|OK/i.test(btn.innerText || ''));
-    if (ok) {
-      ok.click();
-      await delay(100);
+    if (timeParts) {
+      await pickSpinnerColumn(panel, 0, timeParts.hour);
+      await pickSpinnerColumn(panel, 1, timeParts.minute);
+      if (timeParts.second != null) await pickSpinnerColumn(panel, 2, timeParts.second);
     }
+    clickConfirmIn(panel);
+    await delay(120);
     return valueLooksSet(readInputValue(input), ymd);
+  }
+
+  function optionText(el) {
+    return String((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function optionMatches(text, want) {
+    const a = String(text || '').replace(/\s+/g, '');
+    const b = String(want || '').replace(/\s+/g, '');
+    if (!a || !b) return false;
+    return a === b || a.includes(b) || b.includes(a);
+  }
+
+  async function openSelectPanel(input) {
+    const root = input.closest('.el-select, .el-cascader') || input;
+    const trigger = root.querySelector('.el-input__inner, input, .el-select__wrapper, .el-cascader__label') || input;
+    try {
+      trigger.click();
+    } catch (error) {
+      return null;
+    }
+    await delay(280);
+    const panels = visiblePoppers('.el-select-dropdown, .el-cascader__dropdown, .el-popper, .el-autocomplete-suggestion');
+    return panels[panels.length - 1] || null;
+  }
+
+  async function fillSelectByOption(input, value) {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    const panel = await openSelectPanel(input);
+    if (!panel) return false;
+    const filter = panel.querySelector('input') || input;
+    if (filter && !filter.readOnly) {
+      setNativeValue(filter, text);
+      await delay(280);
+    }
+    const options = [...panel.querySelectorAll(
+      '.el-select-dropdown__item, .el-cascader-node, .el-autocomplete-suggestion li, li, .el-option',
+    )];
+    const hit = options.find((opt) => {
+      if (opt.classList && opt.classList.contains('is-disabled')) return false;
+      return optionMatches(optionText(opt), text);
+    });
+    if (!hit) {
+      document.body.click();
+      await delay(80);
+      return false;
+    }
+    hit.click();
+    await delay(180);
+    const leaf = [...panel.querySelectorAll('.el-cascader-node__label')].find((node) => optionMatches(optionText(node), text));
+    if (leaf) {
+      leaf.click();
+      await delay(120);
+    }
+    return valueLooksSet(readInputValue(input), text);
+  }
+
+  async function fillPersonBySearch(input, value) {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    const root = input.closest('.el-select, .el-autocomplete, .el-form-item__content') || input.parentElement;
+    const editable = root.querySelector('input:not([type="hidden"])') || input;
+    try {
+      editable.click();
+    } catch (error) {
+      // 继续写字
+    }
+    setNativeValue(editable, text);
+    await delay(350);
+    const panels = visiblePoppers(
+      '.el-select-dropdown, .el-autocomplete-suggestion, .el-popper, .el-table, .warom-user, .person-select, .user-select',
+    );
+    const panel = panels[panels.length - 1];
+    if (panel) {
+      const options = [...panel.querySelectorAll(
+        '.el-select-dropdown__item, li, tr, .el-option, [role="option"], .user-item, .person-item',
+      )];
+      const hit = options.find((opt) => optionMatches(optionText(opt), text));
+      if (hit) {
+        const clickable = hit.querySelector('td, a, button, span') || hit;
+        clickable.click();
+        await delay(180);
+        if (valueLooksSet(readInputValue(input), text) || valueLooksSet(readInputValue(editable), text)) {
+          return true;
+        }
+      }
+    }
+    // 某些选人组件回车确认
+    try {
+      editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      editable.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+    } catch (error) {
+      // 忽略
+    }
+    await delay(120);
+    return valueLooksSet(readInputValue(input), text) || valueLooksSet(readInputValue(editable), text);
+  }
+
+  async function pushVueValue(root, value) {
+    const vue = findVueInstance(root);
+    if (!vue) return false;
+    try {
+      if (typeof vue.handleInput === 'function') vue.handleInput(value);
+      if (typeof vue.$emit === 'function') {
+        vue.$emit('input', value);
+        vue.$emit('update:modelValue', value);
+        vue.$emit('change', value);
+      }
+      if (vue.value !== undefined) vue.value = value;
+      if (vue.modelValue !== undefined) vue.modelValue = value;
+      return true;
+    } catch (error) {
+      return false;
+    }
   }
 
   async function fillControl(input, value, kind) {
     const text = String(value);
-    if (kind === 'date' || input.closest('.el-date-editor')) {
+    const resolved = kind || detectInputKind(input, input.closest('.el-form-item'));
+
+    if (resolved === 'select' || resolved === 'cascader') {
+      if (await fillSelectByOption(input, text)) return true;
+      await pushVueValue(input.closest('.el-select, .el-cascader') || input, text);
+      await delay(40);
+      return valueLooksSet(readInputValue(input), text);
+    }
+
+    if (resolved === 'person') {
+      if (await fillPersonBySearch(input, text)) return true;
+      if (await fillSelectByOption(input, text)) return true;
+      return valueLooksSet(readInputValue(input), text);
+    }
+
+    if (resolved === 'time') {
+      if (await pickTimeFromPanel(input, text)) return true;
+      setNativeValue(input, text);
+      await pushVueValue(input.closest('.el-date-editor, .el-time-picker') || input, text);
+      await delay(40);
+      return valueLooksSet(readInputValue(input), text);
+    }
+
+    if (resolved === 'date' || resolved === 'datetime' || input.closest('.el-date-editor')) {
       const variants = dateFormatVariants(text);
       for (const variant of variants) {
         setNativeValue(input, variant);
         await delay(40);
         if (valueLooksSet(readInputValue(input), text)) return true;
       }
-      // Element UI / Vue2：往组件上推值
-      const vue = findVueInstance(input.closest('.el-date-editor') || input);
-      if (vue) {
-        for (const variant of variants) {
-          try {
-            if (typeof vue.handleInput === 'function') vue.handleInput(variant);
-            else if (typeof vue.$emit === 'function') {
-              vue.$emit('input', variant);
-              vue.$emit('change', variant);
-            }
-            if (vue.value !== undefined) vue.value = variant;
-          } catch (error) {
-            // 忽略组件差异
-          }
-          await delay(40);
-          if (valueLooksSet(readInputValue(input), text)) return true;
-        }
+      await pushVueValue(input.closest('.el-date-editor') || input, variants[0]);
+      if (await pickDateFromPanel(input, variants[0] || text)) return true;
+      if (resolved === 'datetime' || parseTimeParts(text)) {
+        if (await pickTimeFromPanel(input, text)) return true;
       }
-      if (await pickDateFromPanel(input, variants[0])) return true;
       return valueLooksSet(readInputValue(input), text);
     }
 
     setNativeValue(input, text);
     await delay(30);
     if (valueLooksSet(readInputValue(input), text)) return true;
-    const vue = findVueInstance(input);
-    if (vue && typeof vue.$emit === 'function') {
-      try {
-        vue.$emit('input', text);
-        vue.$emit('change', text);
-      } catch (error) {
-        // 忽略
-      }
-      await delay(30);
-    }
+    await pushVueValue(input, text);
+    await delay(30);
     return valueLooksSet(readInputValue(input), text);
   }
 
   function detectInputKind(input, item) {
     if (!input) return 'text';
     if (input.tagName === 'TEXTAREA') return 'textarea';
-    if (input.closest('.el-date-editor') || /date|time/i.test(input.getAttribute('placeholder') || '')) {
+    const label = normalizeLabel(
+      ((item && item.querySelector('.el-form-item__label, label')) || {}).textContent || '',
+    );
+    const placeholder = String(input.getAttribute('placeholder') || '');
+    const dateRoot = input.closest('.el-date-editor, .el-time-picker');
+    if (dateRoot || /date|time|日期|时间/i.test(placeholder) || /日期|时间/.test(label)) {
+      if (dateRoot && dateRoot.className && /time/.test(dateRoot.className) && !/date/.test(dateRoot.className)) {
+        return 'time';
+      }
+      if (/时间/.test(label) && !/日期/.test(label)) return 'time';
+      if (/datetime|日期时间|开始时间|结束时间/i.test(`${placeholder}${label}${dateRoot && dateRoot.className || ''}`)) {
+        return 'datetime';
+      }
       return 'date';
     }
-    if (input.closest('.el-select') || input.closest('.el-cascader')) return 'select';
-    if (item && item.querySelector('.el-select')) return 'select';
+    if (/接收人|申请人|审批人|人员|员工|用户|选人/.test(label)) return 'person';
+    if (input.closest('.el-cascader') || (item && item.querySelector('.el-cascader'))) return 'cascader';
+    if (input.closest('.el-select') || (item && item.querySelector('.el-select'))) return 'select';
+    if (input.closest('.el-autocomplete') || /请选择|选择/.test(placeholder)) return 'select';
     return 'text';
   }
 
@@ -297,9 +496,15 @@ import {
       }
       const item = input.closest('.el-form-item');
       const kind = detectInputKind(input, item);
-      const ok = await fillControl(input, String(value), kind);
-      const actual = readInputValue(input);
-      if (ok && actual) filled[label] = actual;
+      let ok = await fillControl(input, String(value), kind);
+      let actual = readInputValue(input);
+      // 封装组件偶发没点中：同一字段只重试一次
+      if (!(ok && valueLooksSet(actual, value))) {
+        await delay(120);
+        ok = await fillControl(input, String(value), kind);
+        actual = readInputValue(input);
+      }
+      if (ok && valueLooksSet(actual, value)) filled[label] = actual;
       else notStuck.push(label);
     }
     const parts = [];

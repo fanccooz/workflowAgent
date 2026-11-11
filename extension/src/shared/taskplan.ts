@@ -83,6 +83,30 @@
     return needles.some((item) => page.includes(item));
   }
 
+  /**
+   * 审批是否真正离开待办：原行消失，或同行状态变成已办/已同意/已驳回。
+   * rows 是页面上当前可见行的文案数组。
+   */
+  function approvalSettled(beforeText, afterRows, keyword, decision) {
+    const before = String(beforeText || '').replace(/\s+/g, '');
+    const key = String(keyword || '').replace(/\s+/g, '');
+    const rows = (Array.isArray(afterRows) ? afterRows : [])
+      .map((item) => String(item || '').replace(/\s+/g, ''))
+      .filter(Boolean);
+    if (!before && !key) return false;
+    const stillSame = before
+      ? rows.some((row) => row === before)
+      : rows.some((row) => row.includes(key));
+    if (!stillSame) return true;
+    const doneWord = /驳回|拒绝|不同意/.test(String(decision || ''))
+      ? /已驳回|驳回|拒绝/
+      : /已同意|已通过|已办|同意|通过/;
+    const matched = before
+      ? rows.filter((row) => row === before || (key && row.includes(key)))
+      : rows.filter((row) => key && row.includes(key));
+    return matched.some((row) => doneWord.test(row) && !/待办|待审|待我/.test(row));
+  }
+
   function shouldResumeNow(task, now) {
     if (!task || task.status !== 'waiting') return false;
     if (!task.recurring) return true;
@@ -116,6 +140,8 @@ MAX_EXEC_STEPS,
     queueAfterFailure,
     parseApprovalQuery,
     classifyTaskHorizon,
+    reminderNeedles,
     reminderMatched,
+    approvalSettled,
     shouldResumeNow,
 };

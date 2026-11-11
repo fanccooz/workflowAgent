@@ -1,6 +1,7 @@
 import { it } from 'vitest';
 import assert from 'node:assert/strict';
 import {
+  approvalSettled,
   classifyTaskHorizon,
   cleanPlanSteps,
   isHardStop,
@@ -72,6 +73,17 @@ it('事后提醒算长期任务，每天查看隔 12 小时再做', () => {
     updatedAt: '2026-11-10 08:30:00',
   }, recent), false);
   assert.equal(shouldResumeNow({ status: 'waiting', recurring: false, updatedAt: '2026-11-10 08:30:00' }, recent), true);
+});
+
+it('审批回读：原行消失才算办完', () => {
+  assert.equal(
+    approvalSettled('请假 张三 待办', ['加班 李四 待办'], '请假', '同意'),
+    true,
+  );
+  assert.equal(
+    approvalSettled('请假 张三 待办', ['请假 张三 待办'], '请假', '同意'),
+    false,
+  );
 });
 
 it('没有新步骤时停止', () => {

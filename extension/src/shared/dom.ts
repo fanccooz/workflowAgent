@@ -58,6 +58,12 @@ export function findVueInstance(el) {
   let node = el;
   for (let i = 0; i < 12 && node; i += 1) {
     if (node.__vue__) return node.__vue__;
+    // Vue 3：组件实例挂在 __vueParentComponent.proxy / ctx
+    const parent = node.__vueParentComponent;
+    if (parent) {
+      if (parent.proxy) return parent.proxy;
+      if (parent.ctx) return parent.ctx;
+    }
     node = node.parentElement;
   }
   return null;
@@ -97,9 +103,19 @@ export function setNativeValue(el, value) {
 
 export function readInputValue(el) {
   if (!el) return '';
-  const wrap = el.closest('.el-select, .el-input, .el-textarea') || el;
+  const wrap = el.closest('.el-select, .el-cascader, .el-date-editor, .el-input, .el-textarea') || el;
+  const tags = [...wrap.querySelectorAll('.el-select__tags-text, .el-tag__content, .el-select__selected-item')]
+    .map((node) => String(node.textContent || '').trim())
+    .filter(Boolean);
+  if (tags.length) return tags.join(',');
   const shown = wrap.querySelector('.el-input__inner, input, textarea') || el;
-  return String(shown.value || shown.getAttribute('value') || wrap.innerText || '').trim();
+  const fromInput = String(shown.value || shown.getAttribute('value') || '').trim();
+  if (fromInput) return fromInput;
+  const placeholderish = wrap.querySelector('.el-select__placeholder, .el-range-input');
+  if (placeholderish && placeholderish.classList && placeholderish.classList.contains('el-select__placeholder')) {
+    return '';
+  }
+  return String(wrap.innerText || '').replace(/\s+/g, ' ').trim();
 }
 
 export function valueLooksSet(actual, expected) {

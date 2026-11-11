@@ -181,6 +181,32 @@ it('不能把提交变成点击', () => {
   assert.match(chat.reply, /手动/);
 });
 
+it('模型判定为聊天时不执行打开', () => {
+  const chat = sanitizeChatAction(
+    {
+      mode: 'chat',
+      reply: '请假流程用来登记休假天数和事由。',
+      actions: [{ type: 'open_workflow', query: '请假' }],
+    },
+    '请假流程是干什么的',
+  );
+  assert.equal(chat.mode, 'chat');
+  assert.equal(chat.action.type, 'none');
+});
+
+it('模型判定为任务时仍会执行', () => {
+  const chat = sanitizeChatAction(
+    {
+      mode: 'task',
+      reply: '好的，正在打开请假。',
+      actions: [{ type: 'open_workflow', query: '请假' }],
+    },
+    '打开请假流程',
+  );
+  assert.equal(chat.mode, 'task');
+  assert.equal(chat.action.type, 'open_workflow');
+});
+
 it('没有动作时不能假装已点开', () => {
   const chat = sanitizeChatAction(
     {

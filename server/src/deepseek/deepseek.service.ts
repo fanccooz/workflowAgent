@@ -192,13 +192,16 @@ export class DeepseekService {
     },
   ): Promise<{ reply: string; steps: PlanStep[] }> {
     const system = [
-      '你是企业信息平台的任务规划器，把用户指令拆成可执行步骤。',
+      '你是企业信息平台的任务规划器。先区分正常聊天和执行任务。',
       '必须只输出一个 JSON 对象，不要 Markdown、不要解释。',
-      '格式：{"reply":"一句话说明","steps":[{"type":"...","query":"..."}]}',
+      '格式：{"mode":"chat|task","reply":"一句话说明","steps":[{"type":"...","query":"..."}]}',
+      'chat：提问、解释、讨论、看页面信息。steps 必须是空数组，不要打开页面。',
+      'task：用户要你现在就去页面上办，再拆步骤。拿不准时用 chat。',
+      '要求规划剩余步骤或补救失败步骤时用 task。',
       'type 只能是：open_todo、approve_todo、open_menu、open_workflow、filter_list、leave.open_fill、form.open_fill、click_ui、panel_minimize。',
       '待办里同意或驳回用 approve_todo，不要点击提交。',
       '有可填内容用 leave.open_fill 或 form.open_fill，不要只打开。禁止 click_ui 的 query 为「提交」。',
-      '由你判断是否需要换页：用户要去某页、办某事，或当前页做不到时，直接给 open_*，不要说不能打开。',
+      '只有 mode=task 才给步骤。用户要去某页或办某事时直接给 open_*，不要说不能打开。提问不要因为当前页办不了就改成打开。',
       '【打开 vs 搜索】',
       '- 打开/进入/发起/新建/去某页 = open_workflow / open_menu / open_todo。',
       '- 仅在当前页搜索/筛选 = filter_list（query 只要纯关键字）。',
@@ -228,13 +231,17 @@ export class DeepseekService {
 
     const content = await this.chatCompletions(messages);
     const data = this.parseJsonObject(content);
+    const mode = String(data.mode || '').trim().toLowerCase();
+    let reply = String(data.reply || data.message || '').trim();
+    if (mode === 'chat') {
+      return { reply: reply || '好的。', steps: [] };
+    }
     let steps = this.sanitizeSteps(data.steps);
     const ensured = this.ensureNavAndFilterSteps(utterance, steps, {
       history: options?.history,
       pageSummary: options?.pageSummary,
     });
     steps = ensured.steps;
-    let reply = String(data.reply || data.message || '').trim();
     if (ensured.askUser) {
       reply =
         reply && /[?？]/.test(reply)

@@ -1174,7 +1174,7 @@ import {
     })).filter((row) => row.text && row.text !== '加载异常');
   }
 
-  /** 打开我的待办，找到一条，再点同意或驳回。不点提交。 */
+  /** 打开我的待办，找到一条，再点同意或驳回；回读列表确认离开待办。不点提交。 */
   async function approveTodo(query, analysis) {
     const parsed = TaskPlan.parseApprovalQuery(query);
     const opened = await openCandidate({ type: 'todo', id: 'todo:entry', title: '我的待办' });
@@ -1194,6 +1194,7 @@ import {
         choices: [],
       };
     }
+    const beforeText = hit.text;
     const right = hit.rowIndex == null
       ? null
       : document.querySelector(`.ag-pinned-right-cols-container .ag-row[row-index="${hit.rowIndex}"]`);
@@ -1217,10 +1218,35 @@ import {
         choices: [],
       };
     }
+    await delay(500);
+    // 关掉办理弹窗，回到列表再看这条还在不在
+    await closeWorkflowDialogs();
+    await delay(400);
+    const refresh = [...document.querySelectorAll('button, .el-button, a, span')].find((el) => {
+      if (!isVisibleEl(el) || isInSidebar(el)) return false;
+      const text = controlText(el);
+      return text === '查询' || text === '刷新' || text === '刷新列表';
+    });
+    if (refresh) {
+      refresh.click();
+      await delay(600);
+    }
+    await waitForListPageReady(8000);
+    const afterRows = readVisibleGridRows().map((row) => row.text);
+    const settled = TaskPlan.approvalSettled(beforeText, afterRows, parsed.keyword, parsed.decision);
+    if (!settled) {
+      return {
+        status: 'error',
+        message: `已点击「${parsed.decision}」，但待办列表里「${hit.text.slice(0, 40)}」仍在，未确认办完。`,
+        choices: [],
+        approved: false,
+      };
+    }
     return {
       status: 'open',
-      message: `已在待办中对「${hit.text.slice(0, 40)}」点击「${parsed.decision}」。未点击提交。`,
+      message: `已在待办中对「${hit.text.slice(0, 40)}」完成「${parsed.decision}」，列表已离开待办。未点击提交。`,
       choices: [],
+      approved: true,
     };
   }
 
@@ -1794,12 +1820,18 @@ import {
         analysis: null,
       });
       const page = collectPageRaw();
-      const approved = /已在待办中/.test((exec && exec.message) || '');
-      const matched = TaskPlan.reminderMatched(task.utterance, (page && page.visibleText) || '');
+      const approved = Boolean(exec && exec.approved)
+        || /列表已离开待办|完成「同意」|完成「驳回」/.test((exec && exec.message) || '');
+      const gridText = readVisibleGridRows().map((row) => row.text).join('\n');
+      const matched = TaskPlan.reminderMatched(task.utterance, `${(page && page.visibleText) || ''}\n${gridText}`);
+      const needles = TaskPlan.reminderNeedles ? TaskPlan.reminderNeedles(task.utterance) : [];
+      const stillPending = needles.length
+        ? needles.some((needle) => readVisibleGridRows().some((row) => row.text.replace(/\s+/g, '').includes(needle)))
+        : false;
       if (task.recurring) {
         await Habits.touchWaitingTask(task.runId);
         messages.push(`已查看长期任务 #${task.runId}：${task.utterance}\n${(exec && exec.message) || ''}`);
-      } else if (approved || matched) {
+      } else if (approved || (matched && !stillPending)) {
         await Habits.finishWaitingTask(task.runId);
         messages.push(`长期任务 #${task.runId} 已完成：${task.utterance}\n${(exec && exec.message) || ''}`);
       } else {
