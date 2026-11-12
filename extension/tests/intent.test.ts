@@ -251,6 +251,49 @@ it('最小化流程助手', () => {
   assert.equal(chat.action.type, 'panel_minimize');
 });
 
+it('关掉弹窗应产出 close_dialog', () => {
+  const chat = sanitizeChatAction(
+    { reply: '好的', actions: [{ type: 'none', query: '' }] },
+    '关掉弹窗',
+  );
+  assert.equal(chat.action.type, 'close_dialog');
+});
+
+it('点取消应归一成 close_dialog', () => {
+  const chat = sanitizeChatAction(
+    { reply: '好的', actions: [{ type: 'click_ui', query: '取消' }] },
+    '帮我点取消',
+  );
+  assert.equal(chat.action.type, 'close_dialog');
+});
+
+it('关弹窗与最小化助手不混淆', () => {
+  const dialog = sanitizeChatAction(
+    { reply: '好的', actions: [{ type: 'panel_minimize', query: '' }] },
+    '关闭当前弹窗',
+  );
+  assert.equal(dialog.action.type, 'close_dialog');
+  const panel = sanitizeChatAction(
+    { reply: '好的', actions: [{ type: 'close_dialog', query: '' }] },
+    '关闭流程助手面板',
+  );
+  assert.equal(panel.action.type, 'panel_minimize');
+});
+
+it('关掉弹窗再打开首页保留两步', () => {
+  const chat = sanitizeChatAction(
+    {
+      reply: '好的',
+      actions: [
+        { type: 'open_menu', query: '首页' },
+      ],
+    },
+    '关掉弹窗然后打开首页',
+  );
+  assert.equal(chat.actions[0].type, 'close_dialog');
+  assert.equal(chat.actions.some((item) => item.type === 'open_menu'), true);
+});
+
 it('填表映射只保留页面上的字段 label', () => {
   const result = sanitizeFillMap(
     {

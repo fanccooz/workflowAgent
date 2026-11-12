@@ -10,6 +10,7 @@ export type ChatActionType =
   | 'approve_todo'
   | 'filter_list'
   | 'click_ui'
+  | 'close_dialog'
   | 'panel_minimize';
 
 export interface ChatAction {

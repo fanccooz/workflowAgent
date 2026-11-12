@@ -1264,6 +1264,26 @@ import {
       return { status: 'chat', message: '', choices: [] };
     }
 
+    // 模型显式关窗：关表单 → 确认关闭，不提交。
+    if (type === 'close_dialog') {
+      const closed = await ensureDialogsClosedForNavigation();
+      if (closed && !listBlockingDialogs().length && !listConfirmClosePrompts().length) {
+        return { status: 'closed', message: '已关闭流程弹窗（未提交任何内容）。', choices: [] };
+      }
+      if (listConfirmClosePrompts().length) {
+        return {
+          status: 'error',
+          message: '已点取消，但确认关闭弹窗还在。请再说一次「关掉弹窗」，或手动点确定。',
+          choices: [],
+        };
+      }
+      return {
+        status: 'error',
+        message: '没能关掉流程弹窗。请手动点取消/关闭后再试，或再说一次「关掉弹窗」。',
+        choices: [],
+      };
+    }
+
     // 只有明确离开当前表单时才关窗。打开/回填流程本身不在这里关，避免和回填打架。
     const leavesCurrentForm = [
       'open_menu',
@@ -1271,7 +1291,14 @@ import {
       'approve_todo',
     ].includes(type);
     if (leavesCurrentForm) {
-      await ensureDialogsClosedForNavigation();
+      const closed = await ensureDialogsClosedForNavigation();
+      if (!closed && (listBlockingDialogs().length || listConfirmClosePrompts().length)) {
+        return {
+          status: 'error',
+          message: '表单弹窗还开着，先关掉再进入其他页面。可再说「关掉弹窗」或「打开首页」。',
+          choices: [],
+        };
+      }
     }
 
     if (type === 'leave.open_fill' || type === 'form.open_fill') {
@@ -1321,9 +1348,24 @@ import {
       return applyListFilter(normalizeFilterKeyword(query, utterance), utterance);
     }
     if (type === 'click_ui') {
-      // 回填中不因点击去关窗；仅在未回填且弹窗挡住时，才按离开表单处理
-      if (listBlockingDialogs().length && !FillLock.isFormFillActive()) {
-        await ensureDialogsClosedForNavigation();
+      const clickLabel = String(query || '').replace(/\s+/g, '');
+      // 「取消/关闭」已由 intent 归一成 close_dialog；这里不再为普通点击抢先整窗关掉
+      const isFooterClose = /^(取消|关闭)$/.test(clickLabel);
+      if (
+        !isFooterClose
+        && listBlockingDialogs().length
+        && !FillLock.isFormFillActive()
+        && !/草稿|确定|确认|保存|查询|搜索|重置|新建/.test(clickLabel)
+      ) {
+        // 点击侧栏/页面其它控件前，挡路表单先关
+        const closed = await ensureDialogsClosedForNavigation();
+        if (!closed && listBlockingDialogs().length) {
+          return {
+            status: 'error',
+            message: '表单弹窗挡着，点不到。请先说「关掉弹窗」。',
+            choices: [],
+          };
+        }
       }
       return clickUiByLabel(query, utterance);
     }
@@ -1341,6 +1383,8 @@ import {
   /** 只采页面原文快照；摘要字段由 DeepSeek 自行设定 */
   function collectPageRaw() {
     const dialogs = visibleDialogs();
+    const blocking = listBlockingDialogs();
+    const confirms = listConfirmClosePrompts();
     const dialogText = dialogs
       .map((el) => String(el.textContent || '').replace(/\s+/g, ' ').trim())
       .filter(Boolean)
@@ -1356,6 +1400,9 @@ import {
       hash: location.hash || '',
       path: location.pathname || '',
       hasDialog: dialogs.length > 0,
+      hasBlockingDialog: blocking.length > 0,
+      blockingDialogCount: blocking.length,
+      hasConfirmClose: confirms.length > 0,
       dialogText: dialogText || '',
       visibleText,
     };
@@ -1375,7 +1422,13 @@ import {
         `刚失败的步骤：${failed.type || ''} ${failed.query || ''}`.trim(),
         `失败原因：${errorMessage || '未知'}`,
         '请只规划还没做完的步骤，不要重复已成功的步骤，不要点击提交。',
-      ].join('\n'),
+        pageRaw && pageRaw.hasBlockingDialog
+          ? '当前有挡路流程弹窗：需要换页时先 close_dialog，再 open_menu/open_todo/open_workflow。'
+          : '',
+        pageRaw && pageRaw.hasConfirmClose
+          ? '确认关闭弹窗还在：优先再执行一次 close_dialog。'
+          : '',
+      ].filter(Boolean).join('\n'),
       history: Array.isArray(history) ? history : [],
       pageSummary: pageRaw || null,
     });

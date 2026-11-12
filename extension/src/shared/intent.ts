@@ -150,6 +150,7 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
     'approve_todo',
     'filter_list',
     'click_ui',
+    'close_dialog',
     'panel_minimize',
   ];
 
@@ -322,6 +323,48 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
     return /(最小化|收起|关掉|关闭)/.test(raw) && /(助手|面板|窗口|流程助手)/.test(raw);
   }
 
+  /** 关掉流程申请弹窗（不是助手面板） */
+  function wantsCloseDialog(text) {
+    const raw = String(text || '').replace(/\s+/g, '');
+    if (!raw || wantsPanelMinimize(raw)) return false;
+    if (/关掉弹窗|关闭弹窗|关掉表单|关闭表单|关掉申请|关闭申请|关闭当前弹窗|关掉当前弹窗|关闭流程弹窗|关掉流程弹窗|关掉这个弹窗|关闭这个弹窗|不填了|取消申请/.test(raw)) {
+      return true;
+    }
+    if (/^(关掉|关闭|取消)$/.test(raw)) return true;
+    if (/^(帮我|请)?(关掉|关闭|取消)(当前)?(这个)?(流程|申请|弹窗|表单|窗口)?$/.test(raw)) return true;
+    return false;
+  }
+
+  function isDialogCloseClick(query) {
+    const q = String(query || '').replace(/\s+/g, '');
+    return /^(取消|关闭)$/.test(q);
+  }
+
+  /** 把「点取消/关闭」和口语关窗统一成 close_dialog */
+  function enforceCloseDialog(utterance, actions) {
+    const text = String(utterance || '').replace(/\s+/g, '');
+    let list = Array.isArray(actions) ? actions.slice() : [];
+    list = list.map((item) => {
+      if (item && item.type === 'click_ui' && isDialogCloseClick(item.query)) {
+        return { type: 'close_dialog', query: '' };
+      }
+      return item;
+    });
+
+    if (!wantsCloseDialog(text)) return list;
+
+    const alsoNavigate = /然后|再|之后|并|并且|接着|随后/.test(text)
+      && /打开|进入|去|回到|返回/.test(text);
+    const hasClose = list.some((item) => item && item.type === 'close_dialog');
+    if (!alsoNavigate) {
+      return [{ type: 'close_dialog', query: '' }];
+    }
+    if (!hasClose) {
+      list = [{ type: 'close_dialog', query: '' }, ...list.filter((item) => item && item.type !== 'close_dialog')];
+    }
+    return list.length ? list : [{ type: 'close_dialog', query: '' }];
+  }
+
   function isFormSubmitLabel(text) {
     const q = String(text || '').replace(/\s+/g, '');
     return /提交/.test(q) && !/不提交/.test(q);
@@ -476,6 +519,7 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
     actions = hydrateClicksFromModel(reply, summary, actions);
     actions = enforceModelFormFill(utterance || '', actions, summary, reply);
     actions = enforceApproval(utterance || '', actions);
+    actions = enforceCloseDialog(utterance || '', actions);
     const hadSubmit = actions.some((item) => item.type === 'click_ui' && isFormSubmitLabel(item.query));
     actions = actions.filter((item) => !(item.type === 'click_ui' && isFormSubmitLabel(item.query)));
     if (hadSubmit || (isFormSubmitLabel(utterance) && !actions.some((item) => item.type && item.type !== 'none'))) {
@@ -491,6 +535,11 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
     }
     if (first.type === 'panel_minimize') {
       reply = '好的，已最小化流程助手。';
+    }
+    if (first.type === 'close_dialog') {
+      reply = reply && !/提交/.test(reply)
+        ? reply
+        : '好的，我先关闭当前流程弹窗（不会提交）。';
     }
     // 没有可执行动作时，禁止假装「已点开/已打开/已最小化」
     if (!actionable.length && /已(帮你)?(点开|打开|点击|提交|写入|筛选|最小化)/.test(reply)) {
