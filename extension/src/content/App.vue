@@ -9,7 +9,7 @@ import {
   openCandidate,
   resumeWaitingTasks,
   suppressAutoOpenFromUrl,
-} from './legacy-runner';
+} from './orchestrator';
 import { usePanelPosition } from './composables/usePanelPosition';
 import { useChatSession } from './composables/useChatSession';
 import HabitSuggestions from './components/HabitSuggestions.vue';
