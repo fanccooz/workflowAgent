@@ -1,7 +1,7 @@
 // @ts-nocheck
 /**
- * Content 编排入口：打开流程/菜单/待办、列表筛选、填表执行、聊天拆步、消息桥接。
- * 关窗逻辑见 shared/dialog-dismiss；Agent 工具见 shared/tools。
+ * 流程助手主入口：听用户说话 → 决定怎么做 → 调用 runner 里各模块去点页面。
+ * 关窗见 shared/dialog-dismiss；填表 Agent 见 shared/tools。
  */
 import * as Match from '@/shared/match';
 import * as Intent from '@/shared/intent';

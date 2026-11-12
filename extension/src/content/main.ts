@@ -1,7 +1,7 @@
 import { createApp } from 'vue';
 import App from './App.vue';
 import panelCss from './panel.css?inline';
-import './orchestrator';
+import './assistant';
 
 if (!(globalThis as { __wfAgentLoaded?: boolean }).__wfAgentLoaded) {
   (globalThis as { __wfAgentLoaded?: boolean }).__wfAgentLoaded = true;
