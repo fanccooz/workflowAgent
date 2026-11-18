@@ -2,8 +2,9 @@ export type ChatRole = 'user' | 'assistant';
 
 export type ChatActionType =
   | 'none'
-  | 'leave.open_fill'
-  | 'form.open_fill'
+  | 'open_and_fill'
+  | 'leave.open_fill' // 兼容旧规划 / Nest
+  | 'form.open_fill' // 兼容旧规划 / Nest
   | 'open_workflow'
   | 'open_menu'
   | 'open_todo'

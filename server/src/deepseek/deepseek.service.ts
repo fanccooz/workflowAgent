@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 
 const STEP_TYPES = [
   'none',
+  'open_and_fill',
   'leave.open_fill',
   'form.open_fill',
   'open_workflow',
@@ -13,6 +14,13 @@ const STEP_TYPES = [
   'close_dialog',
   'panel_minimize',
 ] as const;
+
+function normalizeStepType(type: string): PlanStepType {
+  if (type === 'leave.open_fill' || type === 'form.open_fill') return 'open_and_fill';
+  return (STEP_TYPES as readonly string[]).includes(type)
+    ? (type as PlanStepType)
+    : 'none';
+}
 
 export type PlanStepType = (typeof STEP_TYPES)[number];
 
@@ -71,8 +79,7 @@ export class DeepseekService {
     for (const item of list) {
       if (!item || typeof item !== 'object') continue;
       const row = item as { type?: string; query?: string };
-      let type = String(row.type || 'none') as PlanStepType;
-      if (!STEP_TYPES.includes(type)) type = 'none';
+      let type = normalizeStepType(String(row.type || 'none'));
       if (type === 'none') continue;
       const query = String(row.query || '').trim();
       if (type === 'click_ui' && /提交/.test(query) && !/不提交/.test(query)) continue;
@@ -99,9 +106,9 @@ export class DeepseekService {
       '你是企业信息平台的任务规划器。某一步刚刚失败，请只规划还没做完的步骤。',
       '不要重复已经成功的步骤。无法继续时 steps 为空数组。',
       '禁止规划点击「提交」。提交只能由用户手动完成。',
-      '有可填内容用 leave.open_fill 或 form.open_fill。',
+      '有可填内容用 open_and_fill。',
       '只输出 JSON：{"reply":"一句话","steps":[{"type":"...","query":"..."}]}',
-      `合法 type：${STEP_TYPES.filter((item) => item !== 'none').join('、')}`,
+      `合法 type：${STEP_TYPES.filter((item) => item !== 'none' && item !== 'leave.open_fill' && item !== 'form.open_fill').join('、')}`,
     ].join('\n');
     const messages: Array<{ role: string; content: string }> = [{ role: 'system', content: system }];
     for (const item of this.normalizeHistory(payload?.history, 20)) {
@@ -199,9 +206,9 @@ export class DeepseekService {
       'chat：提问、解释、讨论、看页面信息。steps 必须是空数组，不要打开页面。',
       'task：用户要你现在就去页面上办，再拆步骤。拿不准时用 chat。',
       '要求规划剩余步骤或补救失败步骤时用 task。',
-      'type 只能是：open_todo、approve_todo、open_menu、open_workflow、filter_list、leave.open_fill、form.open_fill、click_ui、close_dialog、panel_minimize。',
+      'type 只能是：open_todo、approve_todo、open_menu、open_workflow、filter_list、open_and_fill、click_ui、close_dialog、panel_minimize。',
       '待办里同意或驳回用 approve_todo，不要点击提交。',
-      '有可填内容用 leave.open_fill 或 form.open_fill，不要只打开。禁止 click_ui 的 query 为「提交」。',
+      '有可填内容用 open_and_fill，不要只打开。禁止 click_ui 的 query 为「提交」。',
       'close_dialog：关闭当前流程申请弹窗（取消→确认关闭），不提交；挡路弹窗挡住换页时先 close_dialog 再 open_*。',
       'panel_minimize 只用于最小化流程助手，不是关流程弹窗。',
       '只有 mode=task 才给步骤。用户要去某页或办某事时直接给 open_*，不要说不能打开。提问不要因为当前页办不了就改成打开。',

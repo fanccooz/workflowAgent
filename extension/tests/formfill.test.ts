@@ -38,6 +38,6 @@ it('对话纠正：留言原话升级为 form.open_fill', async () => {
     },
     '我要给丁德志留言',
   );
-  assert.equal(chat.action.type, 'form.open_fill');
+  assert.equal(chat.action.type, 'open_and_fill');
   assert.match(chat.action.query, /留言|内部留言/);
 });

@@ -70,7 +70,7 @@ it('对话动作清洗：请假填表', () => {
     action: { type: 'leave.open_fill', query: '打开请假' },
   });
   assert.equal(chat.reply, '好的，帮你开请假');
-  assert.equal(chat.action.type, 'leave.open_fill');
+  assert.equal(chat.action.type, 'open_and_fill');
   assert.equal(chat.action.query, '打开请假');
   assert.equal(chat.actions.length, 1);
 });

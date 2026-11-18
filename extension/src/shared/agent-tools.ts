@@ -113,28 +113,13 @@ export const AGENT_TOOLS = [
   {
     type: 'function',
     function: {
-      name: 'leave_open_fill',
-      description: '打开流程并按用户话回填（如请假），不要提交。有可填内容时用；只打开用 open_workflow。',
+      name: 'open_and_fill',
+      description: '打开流程并按用户话回填字段，不要提交。有可填内容时用；只打开、无可填内容用 open_workflow。',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: '流程短名，默认请假相关' },
+          query: { type: 'string', description: '流程短名，如「请假」「内部留言」' },
         },
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'form_open_fill',
-      description: '打开非请假流程并回填用户提到的字段，不要提交。',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: '流程短名' },
-        },
-        required: ['query'],
         additionalProperties: false,
       },
     },
@@ -150,8 +135,10 @@ const TOOL_TO_ACTION = {
   click_ui: 'click_ui',
   approve_todo: 'approve_todo',
   panel_minimize: 'panel_minimize',
-  leave_open_fill: 'leave.open_fill',
-  form_open_fill: 'form.open_fill',
+  open_and_fill: 'open_and_fill',
+  // 旧名兼容
+  leave_open_fill: 'open_and_fill',
+  form_open_fill: 'open_and_fill',
 };
 
 export function toolNameToActionType(name) {
@@ -189,7 +176,7 @@ export function buildToolChatMessages(utterance, history, pageRaw) {
     '硬性：不要点击或声称已「提交」流程；提交只能用户手动点。',
     '换页前若页面 hasBlockingDialog=true，先 close_dialog。',
     '打开菜单优先叶子页面；文件夹不够。',
-    '有可填内容用 leave_open_fill / form_open_fill；只打开用 open_workflow。',
+    '有可填内容用 open_and_fill；只打开用 open_workflow。',
     '工具失败时可根据返回信息换参数再试，或向用户说明。',
   ].join('');
 

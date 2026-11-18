@@ -1,7 +1,7 @@
 // @ts-nocheck
 /**
- * 流程助手主入口：听用户说话 → 决定怎么做 → 调用 runner 里各模块去点页面。
- * 关窗见 shared/dialog-dismiss；填表 Agent 见 shared/tools。
+ * 流程助手主入口：听用户说话 → 规划/执行 → 调用 runner 点页面。
+ * AI 就绪时走 native tool calling（open_and_fill 为线性回填）；无 AI 时本地匹配 + openAndFill。
  */
 import * as Match from '@/shared/match';
 import * as Intent from '@/shared/intent';

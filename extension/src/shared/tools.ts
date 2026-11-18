@@ -1,7 +1,6 @@
 // @ts-nocheck
 import * as LeaveSkill from './leave';
 import * as FormFill from './formfill';
-import * as AgentApi from './agent';
 import * as FillLock from './fill-lock';
 import { dismissBlockingDialogs } from './dialog-dismiss';
 import { LIST_HASH } from './types';
@@ -755,138 +754,8 @@ import {
     return { ok: false, message: `未知工具：${name}` };
   }
 
-  function applyToolSideEffects(task, toolName, result) {
-    if ((toolName === 'fill_leave_form' || toolName === 'ai_fill_form') && result.filled) {
-      task.filled = result.filled;
-    }
-    if (toolName === 'ai_fill_form') {
-      task.slotsExtracted = true;
-      task.formFilled = true;
-    }
-    if (toolName === 'check_required') {
-      task.filled = result.filled || {};
-      task.missing = result.missing || [];
-      task.missingTitles = result.missingTitles || [];
-      task.requiredReady = Boolean(result.ready);
-    }
-  }
-
-  function localReflectFallback(toolName, result) {
-    const message = String((result && result.message) || '');
-    if (toolName === 'goto_workflow_list' || /加载异常|刷新列表|没有出来/.test(message)) {
-      return {
-        decision: 'retry',
-        tool: 'goto_workflow_list',
-        args: {},
-        message: '列表异常，正在自动刷新重试。',
-        reason: 'local-fallback',
-      };
-    }
-    if (toolName === 'open_workflow') {
-      return {
-        decision: 'retry',
-        tool: 'open_workflow',
-        args: { query: '请假', preferLeave: true },
-        message: '打开失败，改用更短关键词「请假」重试。',
-        reason: 'local-fallback',
-      };
-    }
-    return {
-      decision: 'stop',
-      tool: null,
-      args: {},
-      message: message || '执行失败。',
-      reason: 'local-fallback',
-    };
-  }
-
-  async function runAgentLoop(task, helpers) {
-    const Agent = AgentApi;
-    if (!Agent) throw new Error('Agent 未加载');
-    const h = helpers || {};
-    const log = [];
-    const maxReflect = Agent.MAX_REFLECT || 2;
-
-    for (let i = 0; i < Agent.MAX_STEPS; i += 1) {
-      if (task.status !== 'running') break;
-      const observed = observePage();
-      const action = Agent.nextAction(task, {
-        ...observed.observation,
-        requiredReady: task.requiredReady,
-        missing: task.missing,
-      });
-      if (action.type === 'stop') {
-        log.push({ type: 'stop', status: action.status, message: action.message });
-        break;
-      }
-
-      let result = await runTool(action.name, action.args, helpers);
-      log.push({ type: 'tool', name: action.name, ok: result.ok, message: result.message });
-
-      // 失败反思重试：不立刻 apply 失败结果，先问 DeepSeek（或本地兜底）
-      if (Agent.isRecoverableFailure(action.name, result)
-        && Number(task.reflectCount || 0) < maxReflect) {
-        task.reflectCount = Number(task.reflectCount || 0) + 1;
-        let plan;
-        if (typeof h.aiReflect === 'function') {
-          try {
-            plan = await h.aiReflect({
-              utterance: task.utterance,
-              goal: task.goal,
-              failedTool: action.name,
-              error: result.message || '',
-              status: result.status || null,
-              observation: observed.observation,
-            });
-          } catch (error) {
-            plan = localReflectFallback(action.name, result);
-            plan.message = `${plan.message}（反思调用失败：${error.message || '错误'}）`;
-          }
-        } else {
-          plan = localReflectFallback(action.name, result);
-        }
-
-        log.push({
-          type: 'reflect',
-          ok: true,
-          message: `反思：${plan.decision}${plan.message ? ` — ${plan.message}` : ''}`,
-        });
-
-        if (plan.decision === 'retry' && plan.tool) {
-          const retryArgs = { ...(action.args || {}), ...(plan.args || {}) };
-          if (plan.args && plan.args.query) {
-            retryArgs.utterance = plan.args.query;
-            retryArgs.preferLeave = true;
-          }
-          const retryResult = await runTool(plan.tool, retryArgs, helpers);
-          log.push({
-            type: 'tool',
-            name: plan.tool,
-            ok: retryResult.ok,
-            message: `重试：${retryResult.message || ''}`,
-          });
-          Agent.applyResult(task, plan.tool, retryResult);
-          applyToolSideEffects(task, plan.tool, retryResult);
-          continue;
-        }
-
-        if (plan.decision === 'ask_user') {
-          task.status = 'ask';
-          task.lastMessage = plan.message || result.message || '需要你补充信息后再试。';
-          log.push({ type: 'stop', status: 'ask', message: task.lastMessage });
-          break;
-        }
-        // stop：落下原失败结果
-      }
-
-      Agent.applyResult(task, action.name, result);
-      applyToolSideEffects(task, action.name, result);
-    }
-    return { task, log };
-  }
-
 export {
   checkRequired,
   submitWorkflow,
-  runAgentLoop,
+  runTool,
 };

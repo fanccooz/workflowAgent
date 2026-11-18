@@ -142,6 +142,7 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
 
   const CHAT_ACTIONS = [
     'none',
+    'open_and_fill',
     'leave.open_fill',
     'form.open_fill',
     'open_workflow',
@@ -153,6 +154,17 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
     'close_dialog',
     'panel_minimize',
   ];
+
+  function normalizeFillActionType(type) {
+    if (type === 'leave.open_fill' || type === 'form.open_fill' || type === 'open_and_fill') {
+      return 'open_and_fill';
+    }
+    return type;
+  }
+
+  function isFillActionType(type) {
+    return type === 'open_and_fill' || type === 'leave.open_fill' || type === 'form.open_fill';
+  }
 
   const COMMON_PAGE_BUTTONS = [
     '查看草稿',
@@ -173,6 +185,7 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
     const actionRaw = raw && typeof raw === 'object' ? raw : {};
     let type = String(actionRaw.type || 'none');
     if (!CHAT_ACTIONS.includes(type)) type = 'none';
+    type = normalizeFillActionType(type);
     return {
       type,
       query: String(actionRaw.query || '').trim(),
@@ -279,8 +292,7 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
         item.type === 'open_workflow'
         || item.type === 'open_menu'
         || item.type === 'open_todo'
-        || item.type === 'leave.open_fill'
-        || item.type === 'form.open_fill'
+        || isFillActionType(item.type)
       ));
       if (!hasOpen) {
         const target = extractOpenTarget(text);
@@ -444,10 +456,10 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
     const judged = fillsFromSummary(summary);
     if (!Object.keys(judged).length && !modelPromisedFill(reply)) return actions;
     const blob = `${utterance || ''}\n${reply || ''}`;
-    const fillType = /请假/.test(blob) ? 'leave.open_fill' : 'form.open_fill';
+    const fillType = 'open_and_fill';
     const inferred = inferWorkflowQuery(blob);
     const list = Array.isArray(actions) ? actions.slice() : [];
-    const hasFill = list.some((item) => item.type === 'form.open_fill' || item.type === 'leave.open_fill');
+    const hasFill = list.some((item) => isFillActionType(item.type));
     if (!hasFill) {
       const current = list.find((item) => item.type === 'open_workflow');
       const q = String((current && current.query) || '').replace(/\s+/g, '');
@@ -455,7 +467,7 @@ import { fillsFromSummary, inferWorkflowQuery } from './formfill';
       return [{ type: fillType, query: generic ? (inferred || q || utterance) : q }];
     }
     return list.map((item) => {
-      if (item.type === 'open_workflow' || item.type === 'form.open_fill' || item.type === 'leave.open_fill') {
+      if (item.type === 'open_workflow' || isFillActionType(item.type)) {
         return { type: fillType, query: item.query || inferred || utterance };
       }
       return item;

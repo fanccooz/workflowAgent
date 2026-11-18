@@ -15,7 +15,7 @@ import {
   ensureDialogsClosedForNavigation,
   resetCloseOnce,
 } from '@/shared/dialog-dismiss';
-import { runLeaveAgent } from './leave-flow';
+import { openAndFill } from './leave-flow';
 import {
   openWorkflowByUtterance,
   aiOpenWorkflow,
@@ -78,9 +78,9 @@ export async function executeChatAction(action, utterance, options) {
     }
   }
 
-  if (type === 'leave.open_fill' || type === 'form.open_fill') {
-    return runLeaveAgent(utterance, {
-      goal: type,
+  if (type === 'open_and_fill' || type === 'leave.open_fill' || type === 'form.open_fill') {
+    return openAndFill(utterance, {
+      goal: type === 'leave.open_fill' ? 'leave.open_fill' : 'open_and_fill',
       openQuery: query,
       analysis: opts.analysis || null,
     });
