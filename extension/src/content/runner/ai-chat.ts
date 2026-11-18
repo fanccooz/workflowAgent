@@ -37,3 +37,16 @@ export async function askDeepSeekChat(utterance, history, pageRaw) {
     }, utterance);
   }
 }
+
+/** 原生 tool calling 单轮：完整 messages 进，assistant message 出 */
+export async function askDeepSeekToolsTurn(messages, tools) {
+  const response = await chrome.runtime.sendMessage({
+    type: MSG.aiToolsTurn,
+    messages: Array.isArray(messages) ? messages : [],
+    tools: Array.isArray(tools) ? tools : [],
+  });
+  if (!response || !response.ok) {
+    throw new Error((response && response.message) || '工具对话失败');
+  }
+  return response.message || null;
+}

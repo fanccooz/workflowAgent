@@ -30,6 +30,7 @@ import {
 } from './list-filter';
 import { approveTodo } from './todo-approve';
 import { askDeepSeekChat } from './ai-chat';
+import { runNativeToolLoop } from './tool-loop';
 
 export async function executeChatAction(action, utterance, options) {
   const opts = options || {};
@@ -365,8 +366,7 @@ export function filterActionableSteps(actions) {
 }
 
 /**
- * 对话框主路径：DeepSeek 拆成步骤并入库，再按库里的顺序执行。
- * 某步失败时重新规划剩余步骤，替换未执行的尾部，最多重规划一次。
+ * 对话框主路径：优先 DeepSeek 原生 tool calling；失败再退 JSON actions / Nest。
  */
 export async function planAndRunUtterance(utterance, options) {
   resetCloseOnce();
@@ -376,12 +376,65 @@ export async function planAndRunUtterance(utterance, options) {
   let plannedVia = 'extension';
   const history = options && Array.isArray(options.history) ? options.history : [];
   const pageRaw = collectPageRaw();
-  // Nest / 失败补救用：优先模型自设 summary，否则退回原文快照
   let pageSummary = pageRaw;
-
   let chatOk = false;
   let chatError = '';
   let analysis = null;
+
+  const horizon = TaskPlan.classifyTaskHorizon(utterance);
+
+  // 长期任务只规划不立刻执行，跳过会动页面的 tool loop
+  // 1) 即时任务：原生 function calling（边规划边执行）
+  if (!horizon.durable) {
+    try {
+      const toolRun = await runNativeToolLoop(utterance, { history, analysis: null }, {
+        executeChatAction,
+        collectPageRaw,
+      });
+      reply = toolRun.reply || '';
+      actions = Array.isArray(toolRun.actions) ? toolRun.actions : [];
+      plannedVia = toolRun.plannedVia || 'extension-tools';
+      chatOk = true;
+      analysis = { reply, form: {} };
+
+      if (Habits && actions.length) {
+        try {
+          const saved = await Habits.saveTaskPlan(utterance, reply, actions);
+          if (saved && saved.ok && saved.runId) runId = saved.runId;
+        } catch (error) {
+          runId = null;
+        }
+      }
+
+      const last = toolRun.lastResult || {};
+      return {
+        status: toolRun.status || (actions.length ? 'ok' : 'chat'),
+        message: formatChatResult(reply, {
+          status: toolRun.status,
+          stepMessages: toolRun.stepMessages,
+          message: last.message || '',
+        }),
+        reply,
+        action: actions[0] || { type: 'none', query: '' },
+        actions,
+        plannedVia,
+        choices: toolRun.choices || [],
+        stepMessages: toolRun.stepMessages || [],
+        requiredReady: toolRun.requiredReady,
+        missing: toolRun.missing || [],
+        missingTitles: toolRun.missingTitles || [],
+        filled: toolRun.filled || {},
+        runId: runId || null,
+      };
+    } catch (error) {
+      chatError = error && error.message ? String(error.message) : '工具对话失败';
+      reply = '';
+      actions = [];
+      chatOk = false;
+    }
+  }
+
+  // 2) JSON actions 兜底
   try {
     const chat = await askDeepSeekChat(utterance, history, pageRaw);
     reply = chat.reply || '';
@@ -397,12 +450,15 @@ export async function planAndRunUtterance(utterance, options) {
     plannedVia = 'extension';
     chatOk = true;
   } catch (error) {
-    chatError = error && error.message ? String(error.message) : '对话失败';
-    reply = '';
-    actions = [];
+    const jsonErr = error && error.message ? String(error.message) : '对话失败';
+    chatError = chatError ? `${chatError}；JSON：${jsonErr}` : jsonErr;
+    if (!chatOk) {
+      reply = '';
+      actions = [];
+    }
   }
 
-  // 扩展对话失败时，再退回 Nest 规划（带 history + 页面原文）
+  // 3) Nest 规划兜底
   if (!chatOk && Habits) {
     try {
       const planned = await Habits.planTask(utterance, { history, pageSummary: pageRaw });
@@ -437,7 +493,6 @@ export async function planAndRunUtterance(utterance, options) {
   }
 
   let actionable = filterActionableSteps(actions);
-  const horizon = TaskPlan.classifyTaskHorizon(utterance);
   if (horizon.durable) {
     const remembered = actionable.length ? actionable : [{ type: 'open_todo', query: '我的待办' }];
     let savedId = null;
@@ -477,7 +532,6 @@ export async function planAndRunUtterance(utterance, options) {
     };
   }
 
-  // 入库不能挡住点页面。库正常时几百毫秒内拿到编号；被占用时先按内存步骤执行。
   if (!runId && Habits && actionable.length) {
     const pending = Habits.saveTaskPlan(utterance, reply, actionable).catch(() => null);
     const saved = await Promise.race([

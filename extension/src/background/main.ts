@@ -54,6 +54,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === MSG.aiToolsTurn) {
+    loadSettings()
+      .then((settings) => DeepSeek.toolsTurn(settings, message.messages, message.tools))
+      .then((assistantMessage) => sendResponse({ ok: true, message: assistantMessage }))
+      .catch((error: Error) => sendResponse({ ok: false, message: error.message || '工具对话失败' }));
+    return true;
+  }
+
   if (message.type === MSG.aiFillForm) {
     loadSettings()
       .then((settings) =>

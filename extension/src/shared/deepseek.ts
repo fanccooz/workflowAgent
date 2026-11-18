@@ -14,8 +14,8 @@
     }
   }
 
-  /** 发起 DeepSeek Chat Completions 请求，返回助手文本内容 */
-  async function chatCompletions(settings, messages, options) {
+  /** 发起 DeepSeek Chat Completions，返回完整 assistant message */
+  async function chatCompletionsMessage(settings, messages, options) {
     const opts = options || {};
     const base = String(settings.baseUrl || API_DEFAULTS.baseUrl).replace(/\/$/, '');
     const body = {
@@ -25,6 +25,10 @@
     };
     if (opts.jsonObject) {
       body.response_format = { type: 'json_object' };
+    }
+    if (Array.isArray(opts.tools) && opts.tools.length) {
+      body.tools = opts.tools;
+      body.tool_choice = opts.toolChoice || 'auto';
     }
     const response = await fetch(`${base}/v1/chat/completions`, {
       method: 'POST',
@@ -41,10 +45,17 @@
         : `模型请求失败（${response.status}）`;
       throw new Error(message);
     }
-    const content = payload.choices
+    const message = payload.choices
       && payload.choices[0]
-      && payload.choices[0].message
-      && payload.choices[0].message.content;
+      && payload.choices[0].message;
+    if (!message) throw new Error('模型没有返回内容');
+    return message;
+  }
+
+  /** 发起 DeepSeek Chat Completions 请求，返回助手文本内容 */
+  async function chatCompletions(settings, messages, options) {
+    const message = await chatCompletionsMessage(settings, messages, options);
+    const content = message && message.content;
     if (!content) throw new Error('模型没有返回内容');
     return content;
   }
@@ -189,6 +200,19 @@
     });
   }
 
+  /**
+   * 原生 tool calling 单轮：传入完整 messages + tools，返回 assistant message
+   *（可能含 tool_calls，此时 content 可为空）。
+   */
+  async function toolsTurn(settings, messages, tools) {
+    assertReady(settings, '对话');
+    return chatCompletionsMessage(settings, messages, {
+      temperature: 0.2,
+      tools: tools || [],
+      toolChoice: 'auto',
+    });
+  }
+
   /** 从候选里选流程/菜单/待办 */
   async function decide(settings, utterance, scope, candidates) {
     assertReady(settings, '搜索');
@@ -230,15 +254,30 @@
 export {
 API_DEFAULTS,
     chatCompletions,
+    chatCompletionsMessage,
     buildDecideMessages,
     buildChatMessages,
     buildFillMessages,
     buildReflectMessages,
     chat,
+    toolsTurn,
     decide,
     fillForm,
     reflect,
 };
 
-const DeepSeek = { API_DEFAULTS, chatCompletions, buildDecideMessages, buildChatMessages, buildFillMessages, buildReflectMessages, chat, decide, fillForm, reflect };
+const DeepSeek = {
+  API_DEFAULTS,
+  chatCompletions,
+  chatCompletionsMessage,
+  buildDecideMessages,
+  buildChatMessages,
+  buildFillMessages,
+  buildReflectMessages,
+  chat,
+  toolsTurn,
+  decide,
+  fillForm,
+  reflect,
+};
 export default DeepSeek;

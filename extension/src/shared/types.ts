@@ -84,6 +84,7 @@ export const MSG = {
   getSettings: 'warom-get-settings',
   aiDecide: 'warom-ai-decide',
   aiChat: 'warom-ai-chat',
+  aiToolsTurn: 'warom-ai-tools-turn',
   aiFillForm: 'warom-ai-fill-form',
   aiReflect: 'warom-ai-reflect',
   run: 'warom-run',
