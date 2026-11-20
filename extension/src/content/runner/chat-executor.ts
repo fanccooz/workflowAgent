@@ -190,6 +190,35 @@ export function stepLooksFailed(result) {
   return result.status === 'error' || result.status === 'none' || result.status === 'disabled';
 }
 
+/** tool loop 事后入库：把已执行步骤从 pending 刷成 done/failed */
+export async function syncExecutedStepsToHabits(runId, stepResults) {
+  if (!runId || !Habits || !Array.isArray(stepResults) || !stepResults.length) return;
+  try {
+    await Habits.startTaskRun(runId);
+  } catch (error) {
+    // 汇报失败不影响页面结果
+  }
+  for (let i = 0; i < stepResults.length; i += 1) {
+    const row = stepResults[i] || {};
+    const result = row.result || {};
+    const blocked = result.status === 'choose' || result.status === 'login' || TaskPlan.isHardStop(result);
+    const failed = blocked || stepLooksFailed(result);
+    const isLast = i === stepResults.length - 1 || failed;
+    try {
+      await Habits.reportStep(
+        runId,
+        i + 1,
+        failed ? 'failed' : 'done',
+        result.message || '',
+        isLast,
+      );
+    } catch (error) {
+      // ignore
+    }
+    if (failed) break;
+  }
+}
+
 export async function replanRemaining(utterance, failedAction, errorMessage, history, pageRaw) {
   const failed = failedAction || { type: '', query: '' };
   const response = await chrome.runtime.sendMessage({
@@ -400,7 +429,10 @@ export async function planAndRunUtterance(utterance, options) {
       if (Habits && actions.length) {
         try {
           const saved = await Habits.saveTaskPlan(utterance, reply, actions);
-          if (saved && saved.ok && saved.runId) runId = saved.runId;
+          if (saved && saved.ok && saved.runId) {
+            runId = saved.runId;
+            await syncExecutedStepsToHabits(runId, toolRun.stepResults || []);
+          }
         } catch (error) {
           runId = null;
         }
@@ -413,6 +445,7 @@ export async function planAndRunUtterance(utterance, options) {
           status: toolRun.status,
           stepMessages: toolRun.stepMessages,
           message: last.message || '',
+          runId,
         }),
         reply,
         action: actions[0] || { type: 'none', query: '' },

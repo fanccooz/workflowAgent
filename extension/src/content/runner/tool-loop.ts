@@ -37,10 +37,30 @@ export async function runNativeToolLoop(utterance, options, deps) {
   const messages = buildToolChatMessages(utterance, history, pageRaw);
 
   const executed = [];
+  const stepResults = [];
   const stepMessages = [];
   let lastResult = null;
   let finalReply = '';
   let rounds = 0;
+
+  function pack(status) {
+    return {
+      status,
+      reply: finalReply,
+      message: finalReply,
+      actions: executed,
+      action: executed[0] || { type: 'none', query: '' },
+      stepMessages,
+      stepResults,
+      choices: (lastResult && lastResult.choices) || [],
+      lastResult,
+      plannedVia: 'extension-tools',
+      requiredReady: lastResult && lastResult.requiredReady,
+      missing: (lastResult && lastResult.missing) || [],
+      missingTitles: (lastResult && lastResult.missingTitles) || [],
+      filled: (lastResult && lastResult.filled) || {},
+    };
+  }
 
   while (rounds < MAX_TOOL_ROUNDS) {
     rounds += 1;
@@ -72,6 +92,7 @@ export async function runNativeToolLoop(utterance, options, deps) {
       const result = await executeChatAction(action, utterance, { analysis });
       lastResult = result;
       executed.push(action);
+      stepResults.push({ action, result });
       if (result && result.message) stepMessages.push(String(result.message));
 
       const afterPage = collectPageRaw();
@@ -83,21 +104,7 @@ export async function runNativeToolLoop(utterance, options, deps) {
 
       if (result && (result.status === 'choose' || (result.choices && result.choices.length > 1))) {
         finalReply = String(assistant.content || result.message || '请从候选里选一项。').trim();
-        return {
-          status: result.status || 'choose',
-          reply: finalReply,
-          message: finalReply,
-          actions: executed,
-          action: executed[0] || { type: 'none', query: '' },
-          stepMessages,
-          choices: result.choices || [],
-          lastResult: result,
-          plannedVia: 'extension-tools',
-          requiredReady: result.requiredReady,
-          missing: result.missing || [],
-          missingTitles: result.missingTitles || [],
-          filled: result.filled || {},
-        };
+        return pack(result.status || 'choose');
       }
     }
   }
@@ -113,19 +120,5 @@ export async function runNativeToolLoop(utterance, options, deps) {
     ? lastResult.status
     : (executed.length ? 'ok' : 'chat');
 
-  return {
-    status,
-    reply: finalReply,
-    message: finalReply,
-    actions: executed,
-    action: executed[0] || { type: 'none', query: '' },
-    stepMessages,
-    choices: (lastResult && lastResult.choices) || [],
-    lastResult,
-    plannedVia: 'extension-tools',
-    requiredReady: lastResult && lastResult.requiredReady,
-    missing: (lastResult && lastResult.missing) || [],
-    missingTitles: (lastResult && lastResult.missingTitles) || [],
-    filled: (lastResult && lastResult.filled) || {},
-  };
+  return pack(status);
 }
